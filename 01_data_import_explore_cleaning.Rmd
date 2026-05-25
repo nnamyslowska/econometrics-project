@@ -1,0 +1,187 @@
+---
+title: "Kinship & Unemployment Benefits — Data Import & Exploration"
+author: ""
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: flatly
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+```
+
+## Packages
+
+```{r}
+# install.packages(c("tidyverse", "haven", "skimr", "remotes"))
+# remotes::install_github("xmarquez/democracyData")
+
+library(tidyverse)
+library(haven)
+library(skimr)
+library(democracyData)
+```
+
+```{r}
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+
+read_wb <- function(folder) {
+  f <- list.files(paste0("data/", folder), pattern = "\\.csv$", full.names = TRUE)
+  read_csv(f, skip = 4, show_col_types = FALSE)
+}
+
+pivot_wb <- function(df, value_name) {
+  df %>%
+    select(-`Indicator Name`, -`Indicator Code`) %>%
+    rename(country = `Country Name`, iso3c = `Country Code`) %>%
+    pivot_longer(
+      cols      = matches("^[0-9]{4}$"),
+      names_to  = "year",
+      values_to = value_name
+    ) %>%
+    mutate(year = as.integer(year)) %>%
+    filter(!is.na(.data[[value_name]]))
+}
+```
+
+## Kinship Index
+
+```{r}
+kinship_df <- read_csv("data/kinship_df.csv", show_col_types = FALSE)
+
+glimpse(kinship_df)
+```
+
+
+## Unemployment Benefits Expenditure — ILO (% GDP)
+
+```{r}
+unemployment_benefits_exp_raw <- read_csv(
+  "data/SDG_0131_SEX_SOC_RT_A-filtered-2026-05-25.csv",
+  show_col_types = FALSE
+)
+glimpse(unemployment_benefits_exp_raw)
+```
+
+```{r}
+# Check what social protection functions are available
+unemployment_benefits_exp_raw %>%
+  distinct(classif1, classif1.label) %>%
+  print(n = 50)
+```
+
+```{r}
+unemployment_benefits_exp_raw %>%
+  distinct(classif1, classif1.label) %>%
+  print(n = 50)
+```
+
+```{r}
+unemployment_benefits_exp_raw %>% distinct(sex, sex.label)
+```
+
+```{r}
+unemp_benefits <- unemployment_benefits_exp_raw %>%
+  filter(
+    sex.label == "Sex: Total",
+    str_detect(classif1.label, regex("unemploy", ignore_case = TRUE))
+  ) %>%
+  select(
+    iso3c              = ref_area,
+    country            = ref_area.label,
+    year               = time,
+    unemp_benefits_pct = obs_value
+  )
+
+table(unemp_benefits$year)
+```
+
+```{r}
+# Filter to unemployment function, total sex
+ilo_benefits <- ilo_raw %>%
+  filter(
+    sex.label == "Sex: Total",
+    str_detect(classif1.label, regex("unemploy", ignore_case = TRUE))
+  ) %>%
+  select(
+    iso3c              = ref_area,
+    country_ilo        = ref_area.label,
+    year               = time,
+    unemp_benefits_pct = obs_value
+  )
+
+table(ilo_benefits$year)
+```
+
+```{r}
+# Share of exact zeros — confirms left-censoring at 0, justifying Tobit
+mean(unemp_benefits$unemp_benefits_pct == 0, na.rm = TRUE)
+```
+
+
+## GDP per Capita PPP — World Bank
+
+```{r}
+gdp_raw <- read_csv("data/API_NY.GDP.PCAP.PP.KD_DS2_en_csv_v2_1700.csv")
+
+glimpse(gdp_raw)
+```
+
+
+## Unemployment Rate — World Bank
+
+```{r}
+unemployment <- read_wb("Unemployment rate") %>% pivot_wb("unemp_rate")
+range(unemployment$year)
+```
+
+
+## Population Aged 65+ (%) — World Bank
+
+```{r}
+pop_elderly <- read_wb("Population over 65") %>% pivot_wb("pop_over_65")
+range(pop_elderly$year)
+```
+
+
+
+## Democracy Score — Polity Vx
+
+```{r}
+democracy_raw <- download_polity_annual()
+
+glimpse(democracy_raw)
+```
+
+```{r}
+# polity2 is the cleaned score: -10 (autocracy) to +10 (democracy)
+# Values below -10 are transition/interruption codes, excluded here
+democracy <- democracy_raw %>%
+  select(iso3c = scode, country = polityIV_country, year, polity2) %>%
+  filter(!is.na(polity2), polity2 >= -10)
+
+range(democracy$year, na.rm = TRUE)
+range(democracy$polity2, na.rm = TRUE)
+```
+
+## Year Selection
+
+The kinship index is cross-sectional (one value per country), so we need to pick a single year for all panel datasets. We check how many countries have complete data across all six sources for candidate years 2015–2019.
+
+```{r}
+for (yr in 2015:2019) {
+  overlap <- Reduce(intersect, list(
+    unemp_benefits %>% filter(year == yr) %>% pull(iso3c),
+    gdp            %>% filter(year == yr) %>% pull(iso3c),
+    unemployment   %>% filter(year == yr) %>% pull(iso3c),
+    pop_elderly    %>% filter(year == yr) %>% pull(iso3c),
+    democracy      %>% filter(year == yr) %>% pull(iso3c),
+    kinship$isocode
+  ))
+  cat("Year", yr, "->", length(overlap), "countries with complete data\n")
+}
+```
