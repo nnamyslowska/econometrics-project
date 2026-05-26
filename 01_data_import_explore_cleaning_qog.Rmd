@@ -1,0 +1,39 @@
+---
+title: "QoG — Data Import & Exploration"
+author: ""
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: flatly
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+```
+
+## Packages
+
+```{r}
+# install.packages(c("tidyverse", "haven", "skimr", "remotes"))
+# remotes::install_github("xmarquez/democracyData")
+
+library(tidyverse)
+library(haven)
+library(skimr)
+library(democracyData)
+```
+
+```{r}
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+```
+
+## Kinship Index
+
+```{r}
+qog_df <- read_csv("data/qog_std_cs_jan26.csv", show_col_types = FALSE)
+
+glimpse(qog_df)
+```
