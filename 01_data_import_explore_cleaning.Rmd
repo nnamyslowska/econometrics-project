@@ -19,11 +19,13 @@ knitr::opts_chunk$set(message = FALSE, warning = FALSE)
 ```{r}
 # install.packages(c("tidyverse", "haven", "skimr", "remotes"))
 # remotes::install_github("xmarquez/democracyData")
+# install.packages("countrycode")
 
 library(tidyverse)
 library(haven)
 library(skimr)
 library(democracyData)
+library(countrycode)
 ```
 
 ```{r}
@@ -48,16 +50,36 @@ pivot_wb <- function(df, value_name) {
 }
 ```
 
+#################################################################################################################################
 ## Kinship Index
+#################################################################################################################################
 
 ```{r}
 kinship_df <- read_csv("data/kinship_df.csv", show_col_types = FALSE)
 
 glimpse(kinship_df)
 ```
+```{r}
+summary(kinship_df)
+```
+```{r}
+# check for NAs
+sum(is.na(kinship_df$kinship_score))
+```
+```{r}
+#  Rename isocode to iso3c for consistent merging with all other datasets later
+kinship_df <- kinship_df %>% rename(iso3c = isocode)
+```
+
+flag what standardisation will look like later:
+kinship_df <- kinship_df %>% mutate(kinship_std = scale(kinship_score)[,1])
+
+The distribution is worth noting for your paper: median is 0.75 and 75th percentile is 0.92 — meaning most countries in the world have high kinship scores. Low-kinship countries (Western Europe, Scandinavia) are the minority. This is actually good for the paper — it means your zeros in the dependent variable will largely overlap with high-kinship observations, which is exactly what Enke predicts.
 
 
-## Unemployment Benefits Expenditure — ILO (% GDP)
+#################################################################################################################################
+<!-- ## Unemployment Benefits Expenditure — ILO (% GDP) -->
+#################################################################################################################################
 
 ```{r}
 unemployment_benefits_exp_raw <- read_csv(
@@ -68,88 +90,128 @@ glimpse(unemployment_benefits_exp_raw)
 ```
 
 ```{r}
+summary(unemployment_benefits_exp_raw)
+```
+
+```{r}
 # Check what social protection functions are available
 unemployment_benefits_exp_raw %>%
-  distinct(classif1, classif1.label) %>%
+  distinct(classif1.label) %>%
   print(n = 50)
 ```
 
 ```{r}
-unemployment_benefits_exp_raw %>%
-  distinct(classif1, classif1.label) %>%
-  print(n = 50)
+unemployment_benefits_exp_raw %>% distinct(sex.label)
 ```
 
 ```{r}
-unemployment_benefits_exp_raw %>% distinct(sex, sex.label)
-```
-
-```{r}
-unemp_benefits <- unemployment_benefits_exp_raw %>%
+# step 1 — clean ILO as before
+unemp_coverage <- read_csv(
+  "data/SDG_0131_SEX_SOC_RT_A-filtered-2026-05-25.csv",
+  show_col_types = FALSE
+) %>%
   filter(
-    sex.label == "Sex: Total",
-    str_detect(classif1.label, regex("unemploy", ignore_case = TRUE))
+    sex.label      == "Total",
+    classif1.label == "Function: Unemployed receiving unemployment benefits"
+  ) %>%
+  select(country = ref_area.label, year = time, unemp_coverage_pct = obs_value) %>%
+  mutate(
+    iso3c = countrycode(country, origin = "country.name", destination = "iso3c"),
+    iso3c = if_else(country == "Kosovo", "XKX", iso3c)
+  ) %>%
+  filter(!is.na(iso3c))
+```
+
+```{r}
+# step 2 — restrict to kinship countries only, THEN check years
+unemp_coverage %>%
+  filter(iso3c %in% kinship_df$iso3c) %>%
+  group_by(year) %>%
+  summarise(
+    n_countries = n(),
+    zero_share  = mean(unemp_coverage_pct == 0, na.rm = TRUE)
+  ) %>%
+  filter(year >= 2008, year <= 2019) %>%
+  arrange(year)
+```
+
+
+
+
+```{r}
+table(unemp_coverage$year)
+```
+
+```{r}
+mean(unemp_coverage$unemp_coverage_pct == 0, na.rm = TRUE)
+
+```
+
+```{r}
+unemp_coverage %>% filter(is.na(iso3c)) %>% distinct(country)
+
+```
+
+
+```{r}
+
+unemp_coverage <- unemployment_benefits_exp_raw %>%
+  filter(
+    sex.label == "Total",
+    classif1.label == "Function: Unemployed receiving unemployment benefits"
   ) %>%
   select(
-    iso3c              = ref_area,
     country            = ref_area.label,
     year               = time,
-    unemp_benefits_pct = obs_value
-  )
-
-table(unemp_benefits$year)
-```
-
-```{r}
-# Filter to unemployment function, total sex
-ilo_benefits <- ilo_raw %>%
-  filter(
-    sex.label == "Sex: Total",
-    str_detect(classif1.label, regex("unemploy", ignore_case = TRUE))
+    unemp_coverage_pct = obs_value
   ) %>%
-  select(
-    iso3c              = ref_area,
-    country_ilo        = ref_area.label,
-    year               = time,
-    unemp_benefits_pct = obs_value
-  )
+  mutate(
+    iso3c = countrycode(country, origin = "country.name", destination = "iso3c"),
+    iso3c = if_else(country == "Kosovo", "XKX", iso3c)
+  ) %>%
+  filter(!is.na(iso3c))
 
-table(ilo_benefits$year)
+cat("Countries in 2019:", unemp_coverage %>% filter(year == 2019) %>% nrow(), "\n")
+cat("Zero share in 2019:", mean(unemp_coverage$unemp_coverage_pct[unemp_coverage$year == 2019] == 0, na.rm = TRUE), "\n")
 ```
-
 ```{r}
-# Share of exact zeros — confirms left-censoring at 0, justifying Tobit
-mean(unemp_benefits$unemp_benefits_pct == 0, na.rm = TRUE)
+mean(unemp_coverage$unemp_coverage_pct == 0, na.rm = TRUE)
 ```
 
-
+#################################################################################################################################
 ## GDP per Capita PPP — World Bank
+#################################################################################################################################
 
 ```{r}
-gdp_raw <- read_csv("data/API_NY.GDP.PCAP.PP.KD_DS2_en_csv_v2_1700.csv")
+gdp_raw <- read_csv("data/GDP per capita/API_NY.GDP.PCAP.PP.KD_DS2_en_csv_v2_1700.csv")
 
 glimpse(gdp_raw)
 ```
 
-
+#################################################################################################################################
 ## Unemployment Rate — World Bank
+#################################################################################################################################
 
 ```{r}
-unemployment <- read_wb("Unemployment rate") %>% pivot_wb("unemp_rate")
-range(unemployment$year)
+unemployment_raw <- read_csv("data/Unemployment rate/API_SL.UEM.TOTL.ZS_DS2_en_csv_v2_115692.csv")
+
+glimpse(unemployment_raw)
 ```
 
-
+#################################################################################################################################
 ## Population Aged 65+ (%) — World Bank
+#################################################################################################################################
 
 ```{r}
-pop_elderly <- read_wb("Population over 65") %>% pivot_wb("pop_over_65")
-range(pop_elderly$year)
+pop_elderly_raw <- read_csv("data/Population over 65/API_SP.POP.65UP.TO.ZS_DS2_en_csv_v2_115532.csv")
+
+glimpse(unemployment_raw)
 ```
 
 
-
-## Democracy Score — Polity Vx
+#################################################################################################################################
+## Democracy Score — Polity V
+#################################################################################################################################
 
 ```{r}
 democracy_raw <- download_polity_annual()

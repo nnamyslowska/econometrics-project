@@ -96,6 +96,7 @@ if (is.numeric(df$fh_status)) {
 cat("\n--- Ordered DV (freedom) ---\n")
 print(table(df$freedom, useNA = "ifany"))
 
+cat("Countries with missing Freedom House status:", sum(is.na(df$freedom)), "\n")
 
 # =============================================================================
 # SECTION 3: MISSING-VALUE DIAGNOSTICS (key variables)
@@ -232,7 +233,7 @@ cat("BIC  logit/probit:", BIC(ologit_general),  BIC(oprobit_general), "\n")
 
 protected <- c("kinship", "log_gdppc_c", "kinship:log_gdppc_c")
 
-gts_polr <- function(general_model, data, protected, method = "logistic",
+gts_polr <- function(general_model, data, protected, method = "probit",
                      alpha = 0.05) {
   full <- general_model
   current_terms <- attr(terms(formula(general_model)), "term.labels")
@@ -266,27 +267,43 @@ gts_polr <- function(general_model, data, protected, method = "logistic",
   }
 }
 
-ologit_final <- gts_polr(ologit_general, df_model, protected, method = "logistic")
-cat("\n=== FINAL ordered logit ===\n"); print(summary(ologit_final))
-cat("\n--- Final model p-values ---\n"); print(round(polr_pvals(ologit_final), 4))
+oprobit_final <- gts_polr(ologit_general, df_model, protected, method = "probit")
+cat("\n=== FINAL ordered logit ===\n"); print(summary(oprobit_final))
+cat("\n--- Final model p-values ---\n"); print(round(polr_pvals(oprobit_final), 4))
 
 # Re-estimate the matching final probit and final LPM on the SAME final formula
-final_form    <- formula(ologit_final)
+final_form    <- formula(oprobit_final)
 oprobit_final <- polr(final_form, data = df_model, method = "probit", Hess = TRUE)
 LPM_final     <- lm(update(final_form, freedom_num ~ .), data = df_model)
 
+cat("\n--- VIF (final LPM, as proxy for multicollinearity) ---\n")
+print(vif(LPM_final))
 
 # =============================================================================
-# SECTION 9: PUBLICATION TABLE -- general + final, all three models (req. d)
+# SECTION 9 (FIXED): PUBLICATION TABLE using texreg
 # =============================================================================
-stargazer(LPM_general, ologit_general, oprobit_general,
-          LPM_final,   ologit_final,   oprobit_final,
-          type = "text",
-          column.labels = c("LPM-gen","oLogit-gen","oProbit-gen",
-                            "LPM-fin","oLogit-fin","oProbit-fin"),
-          title = "Kinship and Freedom Status: general vs final models",
+install.packages("texreg")
+library(texreg)
+
+# Console display (equivalent to stargazer type="text")
+screenreg(list(LPM_general, ologit_general, oprobit_general,
+               LPM_final,   oprobit_final,   oprobit_final),
+          custom.model.names = c("LPM-gen","oLogit-gen","oProbit-gen",
+                                 "LPM-fin","oLogit-fin","oProbit-fin"),
           digits = 3)
-# For the Word report, re-run with type = "html" and paste into the document.
+
+# HTML output for pasting into Word (File > Open in Word)
+htmlreg(list(LPM_general, ologit_general, oprobit_general,
+             LPM_final,   oprobit_final,   oprobit_final),
+        file = "results_table.html",
+        custom.model.names = c("LPM-gen","oLogit-gen","oProbit-gen",
+                               "LPM-fin","oLogit-fin","oProbit-fin"),
+        digits = 3,
+        caption = "Kinship and Freedom Status: general vs final models",
+        caption.above = TRUE)
+
+# If you want LaTeX instead:
+# texreg(list(...), file = "results_table.tex", digits = 3)
 
 
 # =============================================================================
@@ -295,15 +312,15 @@ stargazer(LPM_general, ologit_general, oprobit_general,
 # (a) Joint significance of all regressors: final vs intercept-only
 null_mod <- polr(freedom ~ 1, data = df_model, method = "logistic", Hess = TRUE)
 cat("\n--- LR test: final model vs null (joint significance) ---\n")
-print(lrtest(ologit_final, null_mod))
+print(lrtest(oprobit_final, null_mod))
 
 # (b) Key hypothesis H1: kinship reduces freedom (single-coefficient test)
 cat("\n--- Coefficient on kinship (H1) ---\n")
-print(round(polr_pvals(ologit_final)["kinship"], 4))
+print(round(polr_pvals(oprobit_final)["kinship"], 4))
 
 # (c) Secondary hypothesis H2: interaction kinship x income
 cat("\n--- Interaction term (H2) ---\n")
-print(round(polr_pvals(ologit_final)[grep("kinship:", names(polr_pvals(ologit_final)))], 4))
+print(round(polr_pvals(oprobit_final)[grep("kinship:", names(polr_pvals(oprobit_final)))], 4))
 
 
 # =============================================================================
@@ -312,7 +329,7 @@ print(round(polr_pvals(ologit_final)[grep("kinship:", names(polr_pvals(ologit_fi
 # Ordered marginal effects differ per outcome category and SUM TO ZERO across
 # categories for each variable. Reported in percentage-point terms.
 cat("\n--- Marginal effects (ordered logit, at means) ---\n")
-me_ologit <- ocME(ologit_final)          # erer::ocME -> ME per category
+me_ologit <- ocME(oprobit_final)          # erer::ocME -> ME per category
 print(me_ologit)
 # me_ologit$out holds the ME matrices; interpret e.g.:
 # "A one-unit rise in kinship lowers P(Free) by X pp and raises P(Not Free) by Y pp."
@@ -322,11 +339,11 @@ print(me_ologit)
 # SECTION 12: PSEUDO-R2 STATISTICS (req. f)
 # =============================================================================
 cat("\n--- pscl::pR2 (McFadden etc.) ---\n")
-print(pR2(ologit_final))
+print(pR2(oprobit_final))
 
 cat("\n--- McKelvey-Zavoina & others (DescTools) ---\n")
 print(tryCatch(
-  PseudoR2(ologit_final, which = c("McFadden","McKelveyZavoina","Nagelkerke","CoxSnell")),
+  PseudoR2(oprobit_final, which = c("McFadden","McKelveyZavoina","Nagelkerke","CoxSnell")),
   error = function(e) paste("PseudoR2 note:", e$message)))
 
 # Count R2 and adjusted Count R2 (classification-based)
@@ -340,7 +357,7 @@ count_r2 <- function(model) {
     AdjCountR2  = (ncorrect - nmode) / (n - nmode))
 }
 cat("\n--- Count R2 / Adjusted Count R2 ---\n")
-print(round(count_r2(ologit_final), 3))
+print(round(count_r2(oprobit_final), 3))
 # "The model correctly classifies about XX% of countries."
 
 
@@ -348,7 +365,7 @@ print(round(count_r2(ologit_final), 3))
 # SECTION 13: LINKTEST -- specification (req. g)
 # =============================================================================
 # We want _hat significant and _hatsq INSIGNIFICANT (no misspecification).
-# Lab-standard: WNE::linktest(ologit_final)  -- if the WNE package is installed.
+# Lab-standard: WNE::linktest(oprobit_final)  -- if the WNE package is installed.
 # Manual fallback for ordered models:
 linktest_ordered <- function(model) {
   beta <- coef(model)
@@ -362,9 +379,9 @@ linktest_ordered <- function(model) {
   cbind(round(ct, 4), p.value = round(p, 4))
 }
 cat("\n--- Linktest (ordered, manual) ---\n")
-print(tryCatch(linktest_ordered(ologit_final),
+print(tryCatch(linktest_ordered(oprobit_final),
                error = function(e) paste("linktest note:", e$message)))
-# If installed:  WNE::linktest(ologit_final)
+# If installed:  WNE::linktest(oprobit_final)
 
 
 # =============================================================================
@@ -373,11 +390,11 @@ print(tryCatch(linktest_ordered(ologit_final),
 # All share H0: the model fits well (p >= 0.05 -> no evidence of poor fit).
 cat("\n--- Hosmer-Lemeshow for ordered models (logitgof) ---\n")
 print(tryCatch(
-  logitgof(df_model$freedom, fitted(ologit_final), g = 10, ord = TRUE),
+  logitgof(df_model$freedom, fitted(oprobit_final), g = 10, ord = TRUE),
   error = function(e) paste("HL note:", e$message)))
 
 cat("\n--- Lipsitz test ---\n")
-print(tryCatch(lipsitz.test(ologit_final),
+print(tryCatch(lipsitz.test(oprobit_final),
                error = function(e) paste("Lipsitz note:", e$message)))
 
 cat("\n--- Pulkstenis-Robinson test ---\n")
@@ -390,7 +407,7 @@ cat("\n--- Pulkstenis-Robinson test ---\n")
 #                           labels = c("low","mid","high"))
 #   m_cat <- polr(update(final_form, . ~ . + inc_grp), data = df_model)
 #   pulkrob.chisq(m_cat, c("inc_grp"))
-print(tryCatch(pulkrob.chisq(ologit_final, character(0)),
+print(tryCatch(pulkrob.chisq(oprobit_final, character(0)),
                error = function(e) paste("PR note: needs a categorical predictor -", e$message)))
 
 
@@ -400,7 +417,7 @@ print(tryCatch(pulkrob.chisq(ologit_final, character(0)),
 # H0: parallel-regression (proportional-odds) assumption holds.
 # Omnibus p >= 0.05 -> no evidence of violation.
 cat("\n--- Brant test (proportional odds) ---\n")
-print(tryCatch(brant(ologit_final),
+print(tryCatch(brant(oprobit_final),
                error = function(e) paste("Brant note:", e$message)))
 # If violated: consider generalized ordered logit (VGAM::vglm, cumulative,
 # parallel = FALSE) or a partial-proportional-odds model.
@@ -410,7 +427,7 @@ print(tryCatch(brant(ologit_final),
 # SECTION 16: ODDS RATIOS (optional, aids interpretation)
 # =============================================================================
 cat("\n--- Odds ratios (exp(beta)) for the final ordered logit ---\n")
-print(round(exp(coef(ologit_final)), 3))
+print(round(exp(coef(oprobit_final)), 3))
 
 # =============================================================================
 # END
