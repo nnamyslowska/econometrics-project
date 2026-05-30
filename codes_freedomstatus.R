@@ -1,67 +1,54 @@
 # =============================================================================
-# Kinship Intensity, Governance, and Democracy: Two Tobit Models
+# Kinship Intensity and Political Freedom: An Ordered Logit / Probit Analysis
 # =============================================================================
 #
-# MODEL 1 — Dependent variable: wbgi_gee (Government Effectiveness, World Bank WGI)
-#   Theoretical range [-2.5, 2.5]; observed [-2.01, 2.20]
-#   Tobit rationale: GEE is derived from a latent governance measurement model
-#   whose underlying scale is censored at both tails (±2.5) by the estimation
-#   method. 18 observations cluster near the upper bound (>1.5) and 10 near the
-#   lower bound (<-1.5). Two-sided censoring: left = -2.5, right = 2.5.
-#   Interaction: kinship × log_gdppc
-#   Rationale: the dampening effect of kinship on state capacity may be weaker
-#   in wealthier countries that have resources to build impersonal institutions
-#   regardless of cultural legacy.
+# DEPENDENT VARIABLE: fh_status (Freedom House Freedom Status)
+#   3 ordered categories. Built here as an ORDERED FACTOR:
+#       Not Free  <  Partly Free  <  Free      (higher = MORE free)
+#   -> ordered logit / ordered probit (proportional-odds models)
 #
-# MODEL 2 — Dependent variable: vdem_libdem (Liberal Democracy Index, V-Dem)
-#   Theoretical range [0, 1]; observed [0.012, 0.890]
-#   Tobit rationale: 14 observations pile up near the floor (< 0.05) — these are
-#   hard autocracies where liberal democracy is effectively zero and cannot fall
-#   further. This is a left-censored Tobit (left = 0, right = Inf).
-#   Interaction: kinship × dem_duration
-#   Rationale: in long-established democracies, formal institutions may have
-#   displaced kin-based political organisation; the kinship–democracy link
-#   should therefore weaken with accumulated democratic experience.
+# KEY INDEPENDENT VARIABLE: kinship (ekne kinship intensity index) [0, 1]
+#   0 = nuclear-family society ; 1 = tight kinship / cousin-marriage networks
+#   Theory (Schulz et al. 2019; Enke 2019): tight kinship fosters in-group
+#   loyalty and personalised exchange, undermining the impersonal institutions
+#   that sustain political freedom. Expected sign: NEGATIVE (less free).
 #
-# WHY NOT TAUTOLOGICAL?
-#   Kinship score (ekne, Enke 2019 / Schulz et al. 2019) is built from
-#   pre-industrial anthropological data: cousin-marriage rates, clan structures,
-#   co-residence patterns, and lineage organisation — all sourced from the
-#   Ethnographic Atlas (Murdock 1967) and historical church records.
-#   GEE and libdem are contemporary institutional outcomes measured by entirely
-#   independent surveys and expert codings. There is no shared input.
+# CONTROLS (general model):
+#   log_gdppc  (CENTRED)  log_pop   urban_pct   unemp   trade   internet
+# INTERACTION (requirement c): kinship x log_gdppc_c
+#   -> does wealth offset the kinship penalty on freedom?
 #
-# CONTROLS (8 variables, shared across both models):
-#   log_gdppc    — economic development (log GDP p.c., const. 2015 USD, WB)
-#   log_pop      — country size (log total population, WB)
-#   urban_pct    — urbanisation % (WB): urban settings erode kin-network reliance
-#   unemp        — unemployment rate % (ILO): labour market stress
-#   dem_duration — years of continuous democracy (BMR): institutional memory
-#   cpi          — Corruption Perceptions Index 0–100 (TI): related but distinct
-#   trade        — trade openness % of GDP (WB): external institutional pressure
-#   internet     — internet users % of population: civic information access
+# DROPPED from earlier draft (bad / circular controls):
+#   cpi, govt_eff  -> same construct as the outcome (corruption / state quality)
+#   dem_duration   -> near-circular with current freedom status
 #
 # DATA:
-#   QoG Standard Dataset Jan 2026 (Teorell et al.) — qog_std_cs_jan26.csv
-#   Kinship intensity index — kinship_df.csv
-#   Working sample: N = 144 (complete cases across both models)
+#   QoG Standard Dataset Jan 2026 (Teorell et al.) -- qog_std_cs_jan26.csv
+#   Kinship intensity index -- kinship_df.csv
 # =============================================================================
 
 
-# --- 0. Packages --------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# 0. PACKAGES
+# -----------------------------------------------------------------------------
+# install.packages(c("MASS","brant","pscl","generalhoslem","erer","DescTools",
+#                    "stargazer","ggplot2","dplyr","lmtest","car","sandwich",
+#                    "nortest"))
+# WNE::linktest is a Faculty-of-Economics package; install from your lab source
+# if available. A manual fallback (linktest_ordered) is provided below.
 
-# install.packages(c("censReg", "AER", "DescTools",
-#                    "stargazer", "ggplot2", "dplyr", "lmtest", "nortest", "car"))
-
-library("censReg")    # censReg() — Tobit estimator (lab-standard)
-library("AER")        # tobit()   — alternative; gives $x, $scale for manual ME
-library("DescTools")  # Desc()    — descriptive statistics (lab-standard)
-library("stargazer")  # publication-quality regression tables
-library("ggplot2")    # visualisation
-library("dplyr")      # data wrangling
-library("lmtest")     # resettest, bptest, bgtest
-library("nortest")    # ad.test() — Anderson-Darling normality test
-library("car")        # linearHypothesis(), vif()
+library(MASS)          # polr() -- ordered logit / probit
+library(brant)         # brant() -- proportional-odds (parallel regression) test
+library(pscl)          # pR2()   -- pseudo-R2 statistics
+library(generalhoslem) # logitgof(), lipsitz.test(), pulkrob.chisq()
+library(erer)          # ocME()  -- ordered-model marginal effects per category
+library(DescTools)     # Desc(), PseudoR2()
+library(stargazer)     # publication-quality table
+library(ggplot2)
+library(dplyr)
+library(lmtest)        # coeftest, lrtest
+library(car)           # linearHypothesis()
+library(sandwich)
 
 Sys.setenv(LANG = "en")
 options(scipen = 100)
@@ -71,288 +58,360 @@ options(scipen = 100)
 # SECTION 1: LOAD & MERGE
 # =============================================================================
 
-qog     <- read.csv("data/qog_std_cs_jan26.csv",  stringsAsFactors = FALSE)
-kinship <- read.csv("data/kinship_df.csv",         stringsAsFactors = FALSE)
+qog     <- read.csv("data/qog_std_cs_jan26.csv", stringsAsFactors = FALSE)
+kinship <- read.csv("data/kinship_df.csv",        stringsAsFactors = FALSE)
 
 cat("QoG dimensions:     ", dim(qog),     "\n")
 cat("Kinship dimensions: ", dim(kinship), "\n")
 
 # Inner join on ISO-3 country codes (ccodealp in QoG; isocode in kinship)
-df <- merge(qog, kinship,
-            by.x = "ccodealp",
-            by.y = "isocode",
-            all  = FALSE)
-
+df <- merge(qog, kinship, by.x = "ccodealp", by.y = "isocode", all = FALSE)
 cat("Countries after inner join:", nrow(df), "\n")
 
 
 # =============================================================================
-# SECTION 2: MISSING VALUE DIAGNOSTICS
+# SECTION 2: BUILD THE DEPENDENT VARIABLE  (VERIFY CODING FIRST!)
 # =============================================================================
+# Inspect how fh_status is stored in YOUR merged file before recoding.
+cat("\n--- Raw fh_status values ---\n")
+print(table(df$fh_status, useNA = "ifany"))
 
-# --- 2a. Full merged dataset: every column with at least one NA ---
-missing_all <- data.frame(
-  variable    = names(df),
-  n_missing   = sapply(df, function(x) sum(is.na(x))),
-  pct_missing = round(sapply(df, function(x) mean(is.na(x))) * 100, 1),
+# QoG convention is typically NUMERIC: 1 = Free, 2 = Partly Free, 3 = Not Free.
+# >>> CONFIRM against the codebook entry for fh_status. <<<
+# We build an ordered factor running LOW->HIGH freedom so a POSITIVE coefficient
+# means "more free":  Not Free (1) < Partly Free (2) < Free (3).
+
+if (is.numeric(df$fh_status)) {
+  df$freedom <- factor(df$fh_status,
+                       levels = c(3, 2, 1),                 # 3=NotFree ... 1=Free
+                       labels = c("Not Free", "Partly Free", "Free"),
+                       ordered = TRUE)
+} else {
+  # If stored as text labels, just order them explicitly:
+  df$freedom <- factor(df$fh_status,
+                       levels = c("Not Free", "Partly Free", "Free"),
+                       ordered = TRUE)
+}
+
+cat("\n--- Ordered DV (freedom) ---\n")
+print(table(df$freedom, useNA = "ifany"))
+
+
+# =============================================================================
+# SECTION 3: MISSING-VALUE DIAGNOSTICS (key variables)
+# =============================================================================
+key_vars <- c("fh_status", "kinship_score", "wdi_gdpcapcon2015", "wdi_pop",
+              "wdi_popurb", "wdi_unempilo", "wdi_trade", "dr_ig")
+
+missing_key <- data.frame(
+  variable    = key_vars,
+  n_missing   = sapply(df[key_vars], function(x) sum(is.na(x))),
+  pct_missing = round(sapply(df[key_vars], function(x) mean(is.na(x))) * 100, 1),
   row.names   = NULL
 )
-
-missing_nonzero <- missing_all[missing_all$n_missing > 0, ]
-missing_nonzero <- missing_nonzero[order(-missing_nonzero$n_missing), ]
-
-cat("\n--- Missing values: all columns with NA > 0 (sorted descending) ---\n")
-print(missing_nonzero, row.names = FALSE)
-
-# --- 2b. Key model variables only ---
-key_vars <- c("wbgi_gee", "vdem_libdem", "kinship_score",
-              "wdi_gdpcapcon2015", "wdi_pop", "wdi_popurb",
-              "wdi_unempilo", "bmr_demdur", "ti_cpi",
-              "wdi_trade", "dr_ig")
-
 cat("\n--- Missing values: key model variables ---\n")
-print(missing_all[missing_all$variable %in% key_vars, ], row.names = FALSE)
+print(missing_key, row.names = FALSE)
 
 
 # =============================================================================
-# SECTION 3: BUILD WORKING DATASET
+# SECTION 4: VARIABLE CONSTRUCTION  (complete-case working sample)
 # =============================================================================
-# Use the intersection of complete cases across BOTH models so all comparisons
-# are made on the same set of countries.
-
 df_model <- df %>%
   transmute(
-    country      = cname,
-    iso          = ccodealp,
-    
-    # Dependent variables
-    govt_eff     = wbgi_gee,                  # Gov. Effectiveness [-2.5, 2.5]
-    libdem       = vdem_libdem,               # Liberal Democracy  [0, 1]
-    
-    # Key independent variable
-    kinship      = kinship_score,             # ekne [0,1]
-    
-    # Controls
-    log_gdppc    = log(wdi_gdpcapcon2015),    # log GDP per capita
-    log_pop      = log(wdi_pop),              # log population
-    urban_pct    = wdi_popurb,                # urbanisation (%)
-    unemp        = wdi_unempilo,              # unemployment rate (%)
-    dem_duration = bmr_demdur,               # years of democracy
-    cpi          = ti_cpi,                   # corruption index [0–100]
-    trade        = wdi_trade,                # trade openness (% GDP)
-    internet     = dr_ig                     # internet users (%)
+    country   = cname,
+    iso       = ccodealp,
+    freedom   = freedom,                  # ordered DV
+    kinship   = kinship_score,            # key X  [0,1]
+    log_gdppc = log(wdi_gdpcapcon2015),   # log GDP per capita
+    log_pop   = log(wdi_pop),             # log population
+    urban_pct = wdi_popurb,               # urbanisation (%)
+    unemp     = wdi_unempilo,             # unemployment (%)
+    trade     = wdi_trade,                # trade openness (% GDP)
+    internet  = dr_ig                     # internet users (%)
   ) %>%
   filter(complete.cases(.))
 
-cat("\nWorking sample (complete cases, both models):", nrow(df_model), "countries\n")
+# CENTRE log_gdppc so the kinship main effect is interpreted at MEAN income
+df_model$log_gdppc_c <- df_model$log_gdppc - mean(df_model$log_gdppc)
+
+cat("\nWorking sample (complete cases):", nrow(df_model), "countries\n")
+cat("Outcome distribution:\n"); print(table(df_model$freedom))
+# NOTE: if 'trade' (highest missingness) costs too many countries, drop it and
+#       re-run; report the larger N in the paper.
 
 
 # =============================================================================
-# SECTION 4: DESCRIPTIVE STATISTICS
+# SECTION 5: DESCRIPTIVE STATISTICS (lab-standard Desc())
 # =============================================================================
+Desc(df_model$freedom, main = "Freedom Status (ordered DV)")
+Desc(df_model$kinship, main = "Kinship intensity score (ekne)")
 
-# Desc() — lab-standard deep descriptive for the two DVs
-Desc(df_model$govt_eff, main = "Government Effectiveness (wbgi_gee)")
-Desc(df_model$libdem,   main = "Liberal Democracy Index (vdem_libdem)")
-Desc(df_model$kinship,  main = "Kinship intensity score (ekne)")
-
-# Compact summary for all model variables
-cat("\n--- Summary statistics (N =", nrow(df_model), ") ---\n")
-summary(df_model[ , c("govt_eff", "libdem", "kinship",
-                      "log_gdppc", "log_pop", "urban_pct", "unemp",
-                      "dem_duration", "cpi", "trade", "internet")])
+cat("\n--- Summary statistics (continuous regressors) ---\n")
+summary(df_model[, c("kinship","log_gdppc","log_pop","urban_pct",
+                     "unemp","trade","internet")])
 
 
 # =============================================================================
-# SECTION 5: VISUAL INSPECTION
+# SECTION 6: VISUAL INSPECTION
 # =============================================================================
+# Plot 1 -- DV category counts
+ggplot(df_model, aes(x = freedom, fill = freedom)) +
+  geom_bar(alpha = 0.85, colour = "white") +
+  labs(title = "Distribution of Freedom Status", x = NULL, y = "Count") +
+  theme_minimal(base_size = 13) + theme(legend.position = "none")
 
-# --- Plot 1: Distribution of Government Effectiveness ---
-# Look for clustering near ±2.5 (Tobit censoring justification)
-ggplot(df_model, aes(x = govt_eff)) +
-  geom_histogram(bins = 30, fill = "#3A7DC9", colour = "white", alpha = 0.85) +
-  geom_vline(xintercept =  2.5, linetype = "dashed",
-             colour = "#C94040", linewidth = 0.8) +
-  geom_vline(xintercept = -2.5, linetype = "dashed",
-             colour = "#C94040", linewidth = 0.8) +
-  annotate("text", x =  2.35, y = Inf, label = "Upper bound +2.5",
-           colour = "#C94040", angle = 90, vjust = 1.3, hjust = 1.2, size = 3.2) +
-  annotate("text", x = -2.35, y = Inf, label = "Lower bound −2.5",
-           colour = "#C94040", angle = 90, vjust = 1.3, hjust = 1.2, size = 3.2) +
-  labs(title    = "Distribution of Government Effectiveness (Model 1 DV)",
-       subtitle = paste0("N = ", nrow(df_model),
-                         "  |  18 obs > 1.5  |  10 obs < −1.5",
-                         "  →  two-sided Tobit [-2.5, 2.5]"),
-       x = "Government Effectiveness (WGI)", y = "Count") +
+# Plot 2 -- kinship distribution by freedom category (core relationship)
+ggplot(df_model, aes(x = freedom, y = kinship, fill = freedom)) +
+  geom_boxplot(alpha = 0.8) +
+  labs(title = "Kinship intensity across Freedom Status",
+       subtitle = "Expected: less free countries have higher kinship",
+       x = NULL, y = "Kinship score (ekne)") +
+  theme_minimal(base_size = 13) + theme(legend.position = "none")
+
+# Plot 3 -- kinship vs income, coloured by freedom (motivates interaction)
+ggplot(df_model, aes(x = kinship, y = log_gdppc, colour = freedom)) +
+  geom_point(alpha = 0.8, size = 2.2) +
+  labs(title = "Kinship vs income by freedom status",
+       subtitle = "Motivates the kinship x log GDP interaction",
+       x = "Kinship score (ekne)", y = "log GDP per capita") +
   theme_minimal(base_size = 13)
 
-# --- Plot 2: Distribution of Liberal Democracy ---
-# Look for floor clustering near 0 (left-censored Tobit justification)
-ggplot(df_model, aes(x = libdem)) +
-  geom_histogram(bins = 30, fill = "#5AA65A", colour = "white", alpha = 0.85) +
-  geom_vline(xintercept = 0, linetype = "dashed",
-             colour = "#C94040", linewidth = 0.8) +
-  annotate("text", x = 0.015, y = Inf, label = "Floor = 0",
-           colour = "#C94040", angle = 90, vjust = 1.3, hjust = 1.2, size = 3.2) +
-  labs(title    = "Distribution of Liberal Democracy Index (Model 2 DV)",
-       subtitle = paste0("N = ", nrow(df_model),
-                         "  |  14 obs < 0.05  |  max = 0.890",
-                         "  →  left-censored Tobit [0, +Inf]"),
-       x = "Liberal Democracy Index (V-Dem)", y = "Count") +
-  theme_minimal(base_size = 13)
-
-# --- Plot 3: Kinship vs Government Effectiveness ---
-ggplot(df_model, aes(x = kinship, y = govt_eff)) +
-  geom_point(alpha = 0.55, colour = "#3A7DC9", size = 2) +
-  geom_smooth(method = "lm", se = TRUE,
-              colour = "#C94040", linewidth = 0.9) +
-  labs(title    = "Kinship intensity vs Government Effectiveness",
-       subtitle = "Expected negative relationship (H1)",
-       x = "Kinship score (ekne) — 0: nuclear family, 1: tight kinship",
-       y = "Government Effectiveness (WGI)") +
-  theme_minimal(base_size = 13)
-
-# --- Plot 4: Kinship vs Liberal Democracy ---
-ggplot(df_model, aes(x = kinship, y = libdem)) +
-  geom_point(alpha = 0.55, colour = "#5AA65A", size = 2) +
-  geom_smooth(method = "lm", se = TRUE,
-              colour = "#C94040", linewidth = 0.9) +
-  labs(title    = "Kinship intensity vs Liberal Democracy",
-       subtitle = "Expected negative relationship (H2)",
-       x = "Kinship score (ekne) — 0: nuclear family, 1: tight kinship",
-       y = "Liberal Democracy Index (V-Dem)") +
-  theme_minimal(base_size = 13)
-
-# --- Plot 5: Interaction motivation — kinship × log_gdppc on govt_eff ---
-# Split by income tercile to visualise whether the slope varies by wealth
-df_model$income_group <- cut(
-  df_model$log_gdppc,
-  breaks         = quantile(df_model$log_gdppc, probs = c(0, 1/3, 2/3, 1)),
-  labels         = c("Low income", "Middle income", "High income"),
-  include.lowest = TRUE
-)
-
-ggplot(df_model, aes(x = kinship, y = govt_eff)) +
-  geom_point(alpha = 0.5, colour = "#3A7DC9", size = 1.8) +
-  geom_smooth(method = "lm", se = TRUE,
-              colour = "#C94040", linewidth = 0.8) +
-  facet_wrap(~income_group) +
-  labs(title    = "Kinship vs Government Effectiveness — by income tercile",
-       subtitle = "Motivates kinship × log GDP p.c. interaction in Model 1",
-       x = "Kinship score (ekne)", y = "Government Effectiveness") +
-  theme_minimal(base_size = 12)
-
-# --- Plot 6: Interaction motivation — kinship × dem_duration on libdem ---
-# Split by democracy duration tercile
-df_model$dem_group <- cut(
-  df_model$dem_duration,
-  breaks         = quantile(df_model$dem_duration, probs = c(0, 1/3, 2/3, 1)),
-  labels         = c("Short democracy", "Medium democracy", "Long democracy"),
-  include.lowest = TRUE
-)
-
-ggplot(df_model, aes(x = kinship, y = libdem)) +
-  geom_point(alpha = 0.5, colour = "#5AA65A", size = 1.8) +
-  geom_smooth(method = "lm", se = TRUE,
-              colour = "#C94040", linewidth = 0.8) +
-  facet_wrap(~dem_group) +
-  labs(title    = "Kinship vs Liberal Democracy — by democratic experience",
-       subtitle = "Motivates kinship × democracy duration interaction in Model 2",
-       x = "Kinship score (ekne)", y = "Liberal Democracy Index (V-Dem)") +
-  theme_minimal(base_size = 12)
-
-# --- Plot 7: Correlation heatmap — all model variables ---
-cor_vars <- c("govt_eff", "libdem", "kinship", "log_gdppc", "log_pop",
-              "urban_pct", "unemp", "dem_duration", "cpi", "trade", "internet")
-
+# Plot 4 -- correlation heatmap (continuous variables)
+cor_vars   <- c("kinship","log_gdppc","log_pop","urban_pct","unemp","trade","internet")
 cor_matrix <- round(cor(df_model[, cor_vars], use = "complete.obs"), 2)
-cor_df     <- as.data.frame(as.table(cor_matrix))
-names(cor_df) <- c("Var1", "Var2", "Corr")
-
-ggplot(cor_df, aes(x = Var1, y = Var2, fill = Corr)) +
-  geom_tile(colour = "white") +
-  geom_text(aes(label = Corr), size = 2.8, colour = "black") +
-  scale_fill_gradient2(low  = "#C94040", mid = "white", high = "#3A7DC9",
-                       midpoint = 0, limits = c(-1, 1), name = "r") +
-  labs(title = "Correlation matrix — all model variables",
-       x = NULL, y = NULL) +
+cor_df     <- as.data.frame(as.table(cor_matrix)); names(cor_df) <- c("V1","V2","r")
+ggplot(cor_df, aes(V1, V2, fill = r)) +
+  geom_tile(colour = "white") + geom_text(aes(label = r), size = 3) +
+  scale_fill_gradient2(low = "#C94040", mid = "white", high = "#3A7DC9",
+                       midpoint = 0, limits = c(-1, 1)) +
+  labs(title = "Correlation matrix -- regressors", x = NULL, y = NULL) +
   theme_minimal(base_size = 11) +
   theme(axis.text.x = element_text(angle = 45, hjust = 1))
 
 
 # =============================================================================
-# SECTION 6: OLS BASELINES
+# SECTION 7: GENERAL MODELS -- LPM, ORDERED LOGIT, ORDERED PROBIT (req. a, d)
 # =============================================================================
-# Estimate OLS for both models first, mirroring the lab script approach.
-# These serve as: (a) benchmark for Tobit comparison, (b) basis for
-# diagnostic tests (RESET, BP, BG, linktest) later in the analysis.
+form_general <- freedom ~ kinship + log_gdppc_c + log_pop + urban_pct +
+  unemp + trade + internet + kinship:log_gdppc_c
 
-OLS_gee <- lm(
-  govt_eff ~ kinship + log_gdppc + log_pop + urban_pct +
-    unemp + dem_duration + cpi + trade + internet +
-    kinship:log_gdppc,
-  data = df_model
-)
-cat("\n--- OLS baseline: Government Effectiveness ---\n")
-summary(OLS_gee)
+# LPM: treat ordered outcome as numeric 1/2/3 (benchmark only; not preferred)
+df_model$freedom_num <- as.numeric(df_model$freedom)   # NotFree=1 ... Free=3
+LPM_general <- lm(update(form_general, freedom_num ~ .), data = df_model)
 
-OLS_libdem <- lm(
-  libdem ~ kinship + log_gdppc + log_pop + urban_pct +
-    unemp + dem_duration + cpi + trade + internet +
-    kinship:dem_duration,
-  data = df_model
-)
-cat("\n--- OLS baseline: Liberal Democracy ---\n")
-summary(OLS_libdem)
+# Ordered logit and ordered probit
+ologit_general  <- polr(form_general, data = df_model, method = "logistic", Hess = TRUE)
+oprobit_general <- polr(form_general, data = df_model, method = "probit",   Hess = TRUE)
 
+cat("\n=== GENERAL ordered logit ===\n");  print(summary(ologit_general))
+cat("\n=== GENERAL ordered probit ===\n"); print(summary(oprobit_general))
 
-# =============================================================================
-# SECTION 7: GENERAL TOBIT MODELS
-# =============================================================================
+# Helper: p-values for polr slope coefficients (polr gives no p-values directly)
+polr_pvals <- function(model) {
+  ct <- coef(summary(model))
+  slopes <- ct[!rownames(ct) %in% names(model$zeta), , drop = FALSE]  # drop thresholds
+  pv <- pnorm(abs(slopes[, "t value"]), lower.tail = FALSE) * 2
+  setNames(pv, rownames(slopes))
+}
+cat("\n--- General ordered logit: p-values ---\n"); print(round(polr_pvals(ologit_general), 4))
 
-# --- Model 1: Government Effectiveness — two-sided Tobit [-2.5, +2.5] --------
-# Rationale: WGI scores are derived from a latent measurement model whose scale
-# is anchored at ±2.5; observations at the extremes are measurement-censored.
-
-tobit_gee <- censReg(
-  govt_eff ~ kinship + log_gdppc + log_pop + urban_pct +
-    unemp + dem_duration + cpi + trade + internet +
-    kinship:log_gdppc,
-  left  = -2.5,
-  right =  2.5,
-  data  = df_model
-)
-
-cat("\n=== GENERAL MODEL 1: Government Effectiveness (Tobit, ±2.5) ===\n")
-summary(tobit_gee)
-
-cat("\n--- Conditional marginal effects E(y | uncensored) — Model 1 ---\n")
-summary(margEff(tobit_gee))
-
-
-# --- Model 2: Liberal Democracy — left-censored Tobit [0, +Inf] --------------
-# Rationale: 14 countries pile up at the floor of the [0,1] scale (hard
-# autocracies where measured liberal democracy is effectively zero). No
-# observations cluster near the ceiling (max = 0.890), so no right censoring.
-
-tobit_libdem <- censReg(
-  libdem ~ kinship + log_gdppc + log_pop + urban_pct +
-    unemp + dem_duration + cpi + trade + internet +
-    kinship:dem_duration,
-  left  = 0,
-  right = Inf,
-  data  = df_model
-)
-
-cat("\n=== GENERAL MODEL 2: Liberal Democracy (Tobit, left-censored at 0) ===\n")
-summary(tobit_libdem)
-
-cat("\n--- Conditional marginal effects E(y | uncensored) — Model 2 ---\n")
-summary(margEff(tobit_libdem))
+# Choose logit vs probit by information criteria (lower = better)
+cat("\nAIC  logit/probit:", AIC(ologit_general),  AIC(oprobit_general), "\n")
+cat("BIC  logit/probit:", BIC(ologit_general),  BIC(oprobit_general), "\n")
+# We carry the ordered LOGIT forward (brant + odds interpretation); the probit
+# is reported alongside for comparison.
 
 
 # =============================================================================
-# NOTE: General-to-specific selection, full marginal effects (3 kinds),
-#       diagnostic tests, hypothesis verification, and publication table
-#       continue in the next section of the analysis.
+# SECTION 8: GENERAL-TO-SPECIFIC SELECTION (req. b)
+# =============================================================================
+# Rule (lab method): at each step drop the single most-insignificant control,
+# then verify with anova() against the ORIGINAL GENERAL MODEL that ALL dropped
+# variables are jointly = 0 (p >= 0.05 -> safe to drop). Protected from removal:
+# kinship, log_gdppc_c, and the interaction (hierarchy principle).
+
+protected <- c("kinship", "log_gdppc_c", "kinship:log_gdppc_c")
+
+gts_polr <- function(general_model, data, protected, method = "logistic",
+                     alpha = 0.05) {
+  full <- general_model
+  current_terms <- attr(terms(formula(general_model)), "term.labels")
+  repeat {
+    mod <- polr(reformulate(current_terms, response = "freedom"),
+                data = data, method = method, Hess = TRUE)
+    pv  <- polr_pvals(mod)
+    # candidate controls = current terms that are NOT protected and ARE signific…?
+    cand <- setdiff(current_terms, protected)
+    # map term -> its p-value (interaction term name may differ in coef table)
+    cand_p <- pv[intersect(names(pv), cand)]
+    cand_p <- cand_p[cand_p >= alpha]          # only insignificant ones
+    if (length(cand_p) == 0) {
+      cat("\nGTS STOP: all remaining controls significant.\n")
+      return(mod)
+    }
+    drop_var <- names(which.max(cand_p))       # most insignificant
+    reduced_terms <- setdiff(current_terms, drop_var)
+    reduced <- polr(reformulate(reduced_terms, response = "freedom"),
+                    data = data, method = method, Hess = TRUE)
+    lr <- anova(full, reduced)                 # joint test vs GENERAL model
+    p_joint <- lr$"Pr(Chi)"[2]
+    cat(sprintf("\nStep: drop '%s' (p=%.3f) | joint test vs general p=%.3f -> %s\n",
+                drop_var, max(cand_p), p_joint,
+                ifelse(p_joint >= alpha, "DROP", "KEEP & STOP")))
+    if (is.na(p_joint) || p_joint < alpha) {
+      cat("Cannot jointly drop -> keep current model as final.\n")
+      return(mod)
+    }
+    current_terms <- reduced_terms
+  }
+}
+
+ologit_final <- gts_polr(ologit_general, df_model, protected, method = "logistic")
+cat("\n=== FINAL ordered logit ===\n"); print(summary(ologit_final))
+cat("\n--- Final model p-values ---\n"); print(round(polr_pvals(ologit_final), 4))
+
+# Re-estimate the matching final probit and final LPM on the SAME final formula
+final_form    <- formula(ologit_final)
+oprobit_final <- polr(final_form, data = df_model, method = "probit", Hess = TRUE)
+LPM_final     <- lm(update(final_form, freedom_num ~ .), data = df_model)
+
+
+# =============================================================================
+# SECTION 9: PUBLICATION TABLE -- general + final, all three models (req. d)
+# =============================================================================
+stargazer(LPM_general, ologit_general, oprobit_general,
+          LPM_final,   ologit_final,   oprobit_final,
+          type = "text",
+          column.labels = c("LPM-gen","oLogit-gen","oProbit-gen",
+                            "LPM-fin","oLogit-fin","oProbit-fin"),
+          title = "Kinship and Freedom Status: general vs final models",
+          digits = 3)
+# For the Word report, re-run with type = "html" and paste into the document.
+
+
+# =============================================================================
+# SECTION 10: HYPOTHESIS VERIFICATION (req. -- joint & single significance)
+# =============================================================================
+# (a) Joint significance of all regressors: final vs intercept-only
+null_mod <- polr(freedom ~ 1, data = df_model, method = "logistic", Hess = TRUE)
+cat("\n--- LR test: final model vs null (joint significance) ---\n")
+print(lrtest(ologit_final, null_mod))
+
+# (b) Key hypothesis H1: kinship reduces freedom (single-coefficient test)
+cat("\n--- Coefficient on kinship (H1) ---\n")
+print(round(polr_pvals(ologit_final)["kinship"], 4))
+
+# (c) Secondary hypothesis H2: interaction kinship x income
+cat("\n--- Interaction term (H2) ---\n")
+print(round(polr_pvals(ologit_final)[grep("kinship:", names(polr_pvals(ologit_final)))], 4))
+
+
+# =============================================================================
+# SECTION 11: MARGINAL EFFECTS for the FINAL model, per category (req. e)
+# =============================================================================
+# Ordered marginal effects differ per outcome category and SUM TO ZERO across
+# categories for each variable. Reported in percentage-point terms.
+cat("\n--- Marginal effects (ordered logit, at means) ---\n")
+me_ologit <- ocME(ologit_final)          # erer::ocME -> ME per category
+print(me_ologit)
+# me_ologit$out holds the ME matrices; interpret e.g.:
+# "A one-unit rise in kinship lowers P(Free) by X pp and raises P(Not Free) by Y pp."
+
+
+# =============================================================================
+# SECTION 12: PSEUDO-R2 STATISTICS (req. f)
+# =============================================================================
+cat("\n--- pscl::pR2 (McFadden etc.) ---\n")
+print(pR2(ologit_final))
+
+cat("\n--- McKelvey-Zavoina & others (DescTools) ---\n")
+print(tryCatch(
+  PseudoR2(ologit_final, which = c("McFadden","McKelveyZavoina","Nagelkerke","CoxSnell")),
+  error = function(e) paste("PseudoR2 note:", e$message)))
+
+# Count R2 and adjusted Count R2 (classification-based)
+count_r2 <- function(model) {
+  obs  <- model$model[[1]]
+  pred <- predict(model, type = "class")
+  n    <- length(obs)
+  ncorrect <- sum(pred == obs)
+  nmode    <- max(table(obs))                       # modal-category count
+  c(CountR2     = ncorrect / n,
+    AdjCountR2  = (ncorrect - nmode) / (n - nmode))
+}
+cat("\n--- Count R2 / Adjusted Count R2 ---\n")
+print(round(count_r2(ologit_final), 3))
+# "The model correctly classifies about XX% of countries."
+
+
+# =============================================================================
+# SECTION 13: LINKTEST -- specification (req. g)
+# =============================================================================
+# We want _hat significant and _hatsq INSIGNIFICANT (no misspecification).
+# Lab-standard: WNE::linktest(ologit_final)  -- if the WNE package is installed.
+# Manual fallback for ordered models:
+linktest_ordered <- function(model) {
+  beta <- coef(model)
+  X    <- model.matrix(model)[, names(beta), drop = FALSE]
+  yhat <- as.vector(X %*% beta)
+  dd   <- data.frame(y = model$model[[1]], yhat = yhat, yhat2 = yhat^2)
+  lt   <- polr(y ~ yhat + yhat2, data = dd, method = model$method, Hess = TRUE)
+  ct   <- coef(summary(lt))
+  ct   <- ct[c("yhat","yhat2"), , drop = FALSE]
+  p    <- pnorm(abs(ct[, "t value"]), lower.tail = FALSE) * 2
+  cbind(round(ct, 4), p.value = round(p, 4))
+}
+cat("\n--- Linktest (ordered, manual) ---\n")
+print(tryCatch(linktest_ordered(ologit_final),
+               error = function(e) paste("linktest note:", e$message)))
+# If installed:  WNE::linktest(ologit_final)
+
+
+# =============================================================================
+# SECTION 14: GOODNESS-OF-FIT -- Hosmer-Lemeshow, Lipsitz, Pulkstenis-Robinson (req. h)
+# =============================================================================
+# All share H0: the model fits well (p >= 0.05 -> no evidence of poor fit).
+cat("\n--- Hosmer-Lemeshow for ordered models (logitgof) ---\n")
+print(tryCatch(
+  logitgof(df_model$freedom, fitted(ologit_final), g = 10, ord = TRUE),
+  error = function(e) paste("HL note:", e$message)))
+
+cat("\n--- Lipsitz test ---\n")
+print(tryCatch(lipsitz.test(ologit_final),
+               error = function(e) paste("Lipsitz note:", e$message)))
+
+cat("\n--- Pulkstenis-Robinson test ---\n")
+# NOTE: pulkrob.chisq requires at least one CATEGORICAL predictor in the model.
+# Our regressors are continuous, so this test may not run as-is. To enable it,
+# add a categorical control (e.g. income tercile) and pass its name below.
+# Example:
+#   df_model$inc_grp <- cut(df_model$log_gdppc, quantile(df_model$log_gdppc,
+#                           c(0,1/3,2/3,1)), include.lowest = TRUE,
+#                           labels = c("low","mid","high"))
+#   m_cat <- polr(update(final_form, . ~ . + inc_grp), data = df_model)
+#   pulkrob.chisq(m_cat, c("inc_grp"))
+print(tryCatch(pulkrob.chisq(ologit_final, character(0)),
+               error = function(e) paste("PR note: needs a categorical predictor -", e$message)))
+
+
+# =============================================================================
+# SECTION 15: PROPORTIONAL-ODDS ASSUMPTION -- Brant test (req. i)
+# =============================================================================
+# H0: parallel-regression (proportional-odds) assumption holds.
+# Omnibus p >= 0.05 -> no evidence of violation.
+cat("\n--- Brant test (proportional odds) ---\n")
+print(tryCatch(brant(ologit_final),
+               error = function(e) paste("Brant note:", e$message)))
+# If violated: consider generalized ordered logit (VGAM::vglm, cumulative,
+# parallel = FALSE) or a partial-proportional-odds model.
+
+
+# =============================================================================
+# SECTION 16: ODDS RATIOS (optional, aids interpretation)
+# =============================================================================
+cat("\n--- Odds ratios (exp(beta)) for the final ordered logit ---\n")
+print(round(exp(coef(ologit_final)), 3))
+
+# =============================================================================
+# END
 # =============================================================================
