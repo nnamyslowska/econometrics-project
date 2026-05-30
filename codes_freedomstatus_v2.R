@@ -53,6 +53,7 @@ library(sandwich)
 Sys.setenv(LANG = "en")
 options(scipen = 100)
 
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
 
 # =============================================================================
 # SECTION 1: LOAD & MERGE
@@ -599,209 +600,412 @@ print(lrtest(oprobit_general, oprobit_null))
 # =============================================================================
 # SECTION 7: GENERAL-TO-SPECIFIC SELECTION (req. b)
 # =============================================================================
-# Rule (lab method): at each step drop the single most-insignificant control,
-# then verify with anova() against the ORIGINAL GENERAL MODEL that ALL dropped
-# variables are jointly = 0 (p >= 0.05 -> safe to drop). Protected from removal:
-# kinship, log_gdppc_c, and the interaction (hierarchy principle).
+# Lab-style approach:
+#   1. Start from the general ordered logit model.
+#   2. Identify the most insignificant non-protected variable.
+#   3. Drop one variable at a time.
+#   4. After each step, compare the restricted model with the ORIGINAL general model.
+#   5. If the LR test p-value >= 0.05, the restriction is accepted.
+#   6. If the LR test p-value < 0.05, stop and keep the previous accepted model.
+#
+# Ordered logit is used for model selection because it had slightly better AIC/BIC
+# and allows proportional-odds diagnostics. Ordered probit will be estimated later
+# using the same final formula as a robustness check.
 
-protected <- c("kinship", "log_gdppc_c", "kinship:log_gdppc_c")
+# --- Helper: coefficient table with p-values for polr models -----------------
 
-gts_polr <- function(general_model, data, protected, method = "probit",
-                     alpha = 0.05) {
-  full <- general_model
-  current_terms <- attr(terms(formula(general_model)), "term.labels")
-  repeat {
-    mod <- polr(reformulate(current_terms, response = "freedom"),
-                data = data, method = method, Hess = TRUE)
-    pv  <- polr_pvals(mod)
-    # candidate controls = current terms that are NOT protected and ARE signific…?
-    cand <- setdiff(current_terms, protected)
-    # map term -> its p-value (interaction term name may differ in coef table)
-    cand_p <- pv[intersect(names(pv), cand)]
-    cand_p <- cand_p[cand_p >= alpha]          # only insignificant ones
-    if (length(cand_p) == 0) {
-      cat("\nGTS STOP: all remaining controls significant.\n")
-      return(mod)
-    }
-    drop_var <- names(which.max(cand_p))       # most insignificant
-    reduced_terms <- setdiff(current_terms, drop_var)
-    reduced <- polr(reformulate(reduced_terms, response = "freedom"),
-                    data = data, method = method, Hess = TRUE)
-    lr <- anova(full, reduced)                 # joint test vs GENERAL model
-    p_joint <- lr$"Pr(Chi)"[2]
-    cat(sprintf("\nStep: drop '%s' (p=%.3f) | joint test vs general p=%.3f -> %s\n",
-                drop_var, max(cand_p), p_joint,
-                ifelse(p_joint >= alpha, "DROP", "KEEP & STOP")))
-    if (is.na(p_joint) || p_joint < alpha) {
-      cat("Cannot jointly drop -> keep current model as final.\n")
-      return(mod)
-    }
-    current_terms <- reduced_terms
-  }
+polr_table <- function(model) {
+  ct <- coef(summary(model))
+  slopes <- ct[!rownames(ct) %in% names(model$zeta), , drop = FALSE]
+  
+  p_values <- 2 * pnorm(abs(slopes[, "t value"]), lower.tail = FALSE)
+  
+  out <- data.frame(
+    Estimate  = slopes[, "Value"],
+    Std_Error = slopes[, "Std. Error"],
+    t_value   = slopes[, "t value"],
+    p_value   = p_values,
+    Signif = cut(
+      p_values,
+      breaks = c(-Inf, 0.001, 0.01, 0.05, 0.1, Inf),
+      labels = c("***", "**", "*", ".", "")
+    ),
+    row.names = rownames(slopes)
+  )
+  
+  # Round only numeric columns
+  numeric_cols <- sapply(out, is.numeric)
+  out[numeric_cols] <- round(out[numeric_cols], 4)
+  
+  return(out)
 }
 
-oprobit_final <- gts_polr(ologit_general, df_model, protected, method = "probit")
-cat("\n=== FINAL ordered logit ===\n"); print(summary(oprobit_final))
-cat("\n--- Final model p-values ---\n"); print(round(polr_pvals(oprobit_final), 4))
 
-# Re-estimate the matching final probit and final LPM on the SAME final formula
-final_form    <- formula(oprobit_final)
-oprobit_final <- polr(final_form, data = df_model, method = "probit", Hess = TRUE)
-LPM_final     <- lm(update(final_form, freedom_num ~ .), data = df_model)
+# --- Step 0: Original general ordered logit model -----------------------------
+# This is the unrestricted model from Section 6.
 
-cat("\n--- VIF (final LPM, as proxy for multicollinearity) ---\n")
+gts_general <- ologit_general
+
+cat("\n=== Step 0: GENERAL ordered logit model ===\n")
+print(summary(gts_general))
+
+cat("\n--- Step 0 coefficient table ---\n")
+print(polr_table(gts_general))
+
+ologit_drop_all_insig <- polr(
+  freedom ~ kinship + log_gdppc_c + log_pop +
+    trade + log_oilrent + kinship:log_gdppc_c,
+  data = df_model,
+  method = "logistic",
+  Hess = TRUE
+)
+
+anova(gts_general, ologit_drop_all_insig)
+# can drop all three insignificant variables together, but we still follow the general-to-specific one by one
+
+# --- Step 1: Drop unemp ------------------------------------------------------
+
+ologit_gts_1 <- polr(
+  freedom ~ kinship + log_gdppc_c + log_pop + urban_pct +
+    trade + internet + log_oilrent + kinship:log_gdppc_c,
+  data = df_model,
+  method = "logistic",
+  Hess = TRUE
+)
+
+cat("\n=== Step 1: Ordered logit without unemp ===\n")
+print(summary(ologit_gts_1))
+
+cat("\n--- Step 1 coefficient table ---\n")
+print(polr_table(ologit_gts_1))
+
+cat("\n--- LR test: Can we drop unemp? ---\n")
+print(anova(gts_general, ologit_gts_1))
+# we can remove unemp
+
+# --- Step 2: Drop urban_pct as well ------------------------------------------
+# We now test whether unemp and urban_pct can be jointly removed.
+
+ologit_gts_2 <- polr(
+  freedom ~ kinship + log_gdppc_c + log_pop +
+    trade + internet + log_oilrent + kinship:log_gdppc_c,
+  data = df_model,
+  method = "logistic",
+  Hess = TRUE
+)
+
+cat("\n=== Step 2: Ordered logit without unemp and urban_pct ===\n")
+print(summary(ologit_gts_2))
+
+cat("\n--- Step 2 coefficient table ---\n")
+print(polr_table(ologit_gts_2))
+
+cat("\n--- LR test: Can we jointly drop unemp and urban_pct? ---\n")
+print(anova(gts_general, ologit_gts_2))
+# we can remove urban_pct
+
+# --- Step 3: Drop internet as well -------------------------------------------
+# We now test whether unemp, urban_pct, and internet can be jointly removed.
+
+ologit_gts_3 <- polr(
+  freedom ~ kinship + log_gdppc_c + log_pop +
+    trade + log_oilrent + kinship:log_gdppc_c,
+  data = df_model,
+  method = "logistic",
+  Hess = TRUE
+)
+
+cat("\n=== Step 3: Ordered logit without unemp, urban_pct, and internet ===\n")
+print(summary(ologit_gts_3))
+
+cat("\n--- Step 3 coefficient table ---\n")
+print(polr_table(ologit_gts_3))
+
+cat("\n--- LR test: Can we jointly drop unemp, urban_pct, and internet? ---\n")
+print(anova(gts_general, ologit_gts_3))
+# we can remove internet
+
+# --- Final model if Step 3 was accepted --------------------------------------
+
+ologit_final <- ologit_gts_3
+final_form <- formula(ologit_final)
+
+cat("\n=== FINAL selected ordered logit model ===\n")
+print(summary(ologit_final))
+
+cat("\n--- Final ordered logit coefficient table ---\n")
+print(polr_table(ologit_final))
+
+# --- Matching final probit and LPM using the same final formula ---------------
+
+oprobit_final <- polr(
+  final_form,
+  data = df_model,
+  method = "probit",
+  Hess = TRUE
+)
+
+LPM_final <- lm(update(final_form, freedom_num ~ .), data = df_model)
+
+cat("\n=== FINAL matching ordered probit model ===\n")
+print(summary(oprobit_final))
+
+cat("\n--- Final ordered probit coefficient table ---\n")
+print(polr_table(oprobit_final))
+
+cat("\n=== FINAL matching LPM benchmark ===\n")
+print(summary(LPM_final))
+
+# --- Compare general and final models ----------------------------------------
+
+cat("\n--- Information criteria: general vs final ordered logit ---\n")
+cat("AIC general/final:", AIC(ologit_general), AIC(ologit_final), "\n")
+cat("BIC general/final:", BIC(ologit_general), BIC(ologit_final), "\n")
+
+cat("\n--- LR test: final ordered logit vs null ---\n")
+ologit_null <- polr(freedom ~ 1, data = df_model,
+                    method = "logistic", Hess = TRUE)
+
+print(lrtest(ologit_final, ologit_null))
+
+# --- Publication-style comparison table --------------------------------------
+
+screenreg(
+  list(LPM_general, ologit_general, oprobit_general,
+       LPM_final, ologit_final, oprobit_final),
+  custom.model.names = c("LPM general", "Logit general", "Probit general",
+                         "LPM final", "Logit final", "Probit final"),
+  digits = 3,
+  stars = c(0.001, 0.01, 0.05, 0.1),
+  custom.note = "*** p < 0.001; ** p < 0.01; * p < 0.05; . p < 0.1"
+)
+
+htmlreg(
+  list(LPM_general, ologit_general, oprobit_general,
+       LPM_final, ologit_final, oprobit_final),
+  file = "section7_general_vs_final_models.html",
+  custom.model.names = c("LPM general", "Logit general", "Probit general",
+                         "LPM final", "Logit final", "Probit final"),
+  digits = 3,
+  stars = c(0.001, 0.01, 0.05, 0.1),
+  custom.note = "*** p < 0.001; ** p < 0.01; * p < 0.05; . p < 0.1",
+  caption = "General-to-specific model selection: general and final specifications",
+  caption.above = TRUE
+)
+
+# --- Multicollinearity check using final LPM as proxy -------------------------
+
+cat("\n--- VIF check on final LPM specification ---\n")
 print(vif(LPM_final))
 
-# =============================================================================
-# SECTION 8: PUBLICATION TABLE using texreg
-# =============================================================================
-install.packages("texreg")
-library(texreg)
+cat("\n--- VIF check with interaction-aware option ---\n")
+print(vif(LPM_final, type = "predictor"))
 
-# Console display (equivalent to stargazer type="text")
-screenreg(list(LPM_general, ologit_general, oprobit_general,
-               LPM_final,   oprobit_final,   oprobit_final),
-          custom.model.names = c("LPM-gen","oLogit-gen","oProbit-gen",
-                                 "LPM-fin","oLogit-fin","oProbit-fin"),
-          digits = 3)
-
-# HTML output for pasting into Word (File > Open in Word)
-htmlreg(list(LPM_general, ologit_general, oprobit_general,
-             LPM_final,   oprobit_final,   oprobit_final),
-        file = "results_table.html",
-        custom.model.names = c("LPM-gen","oLogit-gen","oProbit-gen",
-                               "LPM-fin","oLogit-fin","oProbit-fin"),
-        digits = 3,
-        caption = "Kinship and Freedom Status: general vs final models",
-        caption.above = TRUE)
-
-# If you want LaTeX instead:
-# texreg(list(...), file = "results_table.tex", digits = 3)
-
+# save
+htmlreg(
+  list(LPM_general, ologit_general, oprobit_general,
+       LPM_final, ologit_final, oprobit_final),
+  file = "section7_general_vs_final_models.html",
+  custom.model.names = c("LPM general", "Logit general", "Probit general",
+                         "LPM final", "Logit final", "Probit final"),
+  digits = 3,
+  stars = c(0.001, 0.01, 0.05, 0.1),
+  custom.note = "*** p < 0.001; ** p < 0.01; * p < 0.05; . p < 0.1",
+  caption = "General-to-specific model selection: general and final specifications",
+  caption.above = TRUE
+)
 
 # =============================================================================
-# SECTION 9: HYPOTHESIS VERIFICATION (req. -- joint & single significance)
+# SECTION 8: MODEL DIAGNOSTICS FOR FINAL ORDERED LOGIT
 # =============================================================================
-# (a) Joint significance of all regressors: final vs intercept-only
-null_mod <- polr(freedom ~ 1, data = df_model, method = "logistic", Hess = TRUE)
-cat("\n--- LR test: final model vs null (joint significance) ---\n")
-print(lrtest(oprobit_final, null_mod))
 
-# (b) Key hypothesis H1: kinship reduces freedom (single-coefficient test)
-cat("\n--- Coefficient on kinship (H1) ---\n")
-print(round(polr_pvals(oprobit_final)["kinship"], 4))
+# --- 8a. Brant test: proportional odds / parallel regression assumption -------
+# H0: proportional odds / parallel regression assumption holds
+# H1: proportional odds assumption is violated
+cat("\n--- Brant test: proportional odds assumption ---\n")
+brant(ologit_final)
 
-# (c) Secondary hypothesis H2: interaction kinship x income
-cat("\n--- Interaction term (H2) ---\n")
-print(round(polr_pvals(oprobit_final)[grep("kinship:", names(polr_pvals(oprobit_final)))], 4))
+# --- 8b. Lipsitz goodness-of-fit test ----------------------------------------
 
-
-# =============================================================================
-# SECTION 10: MARGINAL EFFECTS for the FINAL model, per category (req. e)
-# =============================================================================
-# Ordered marginal effects differ per outcome category and SUM TO ZERO across
-# categories for each variable. Reported in percentage-point terms.
-cat("\n--- Marginal effects (ordered logit, at means) ---\n")
-me_ologit <- ocME(oprobit_final)          # erer::ocME -> ME per category
-print(me_ologit)
-# me_ologit$out holds the ME matrices; interpret e.g.:
-# "A one-unit rise in kinship lowers P(Free) by X pp and raises P(Not Free) by Y pp."
-
-
-# =============================================================================
-# SECTION 11: PSEUDO-R2 STATISTICS (req. f)
-# =============================================================================
-cat("\n--- pscl::pR2 (McFadden etc.) ---\n")
-print(pR2(oprobit_final))
-
-cat("\n--- McKelvey-Zavoina & others (DescTools) ---\n")
-print(tryCatch(
-  PseudoR2(oprobit_final, which = c("McFadden","McKelveyZavoina","Nagelkerke","CoxSnell")),
-  error = function(e) paste("PseudoR2 note:", e$message)))
-
-# Count R2 and adjusted Count R2 (classification-based)
-count_r2 <- function(model) {
-  obs  <- model$model[[1]]
-  pred <- predict(model, type = "class")
-  n    <- length(obs)
-  ncorrect <- sum(pred == obs)
-  nmode    <- max(table(obs))                       # modal-category count
-  c(CountR2     = ncorrect / n,
-    AdjCountR2  = (ncorrect - nmode) / (n - nmode))
-}
-cat("\n--- Count R2 / Adjusted Count R2 ---\n")
-print(round(count_r2(oprobit_final), 3))
-# "The model correctly classifies about XX% of countries."
-
-
-# =============================================================================
-# SECTION 12: LINKTEST -- specification (req. g)
-# =============================================================================
-# We want _hat significant and _hatsq INSIGNIFICANT (no misspecification).
-# Lab-standard: WNE::linktest(oprobit_final)  -- if the WNE package is installed.
-# Manual fallback for ordered models:
-linktest_ordered <- function(model) {
-  beta <- coef(model)
-  X    <- model.matrix(model)[, names(beta), drop = FALSE]
-  yhat <- as.vector(X %*% beta)
-  dd   <- data.frame(y = model$model[[1]], yhat = yhat, yhat2 = yhat^2)
-  lt   <- polr(y ~ yhat + yhat2, data = dd, method = model$method, Hess = TRUE)
-  ct   <- coef(summary(lt))
-  ct   <- ct[c("yhat","yhat2"), , drop = FALSE]
-  p    <- pnorm(abs(ct[, "t value"]), lower.tail = FALSE) * 2
-  cbind(round(ct, 4), p.value = round(p, 4))
-}
-cat("\n--- Linktest (ordered, manual) ---\n")
-print(tryCatch(linktest_ordered(oprobit_final),
-               error = function(e) paste("linktest note:", e$message)))
-# If installed:  WNE::linktest(oprobit_final)
-
-
-# =============================================================================
-# SECTION 13: GOODNESS-OF-FIT -- Hosmer-Lemeshow, Lipsitz, Pulkstenis-Robinson (req. h)
-# =============================================================================
-# All share H0: the model fits well (p >= 0.05 -> no evidence of poor fit).
 cat("\n--- Hosmer-Lemeshow for ordered models (logitgof) ---\n")
 print(tryCatch(
-  logitgof(df_model$freedom, fitted(oprobit_final), g = 10, ord = TRUE),
+  logitgof(df_model$freedom, fitted(ologit_final), g = 10, ord = TRUE),
   error = function(e) paste("HL note:", e$message)))
 
 cat("\n--- Lipsitz test ---\n")
-print(tryCatch(lipsitz.test(oprobit_final),
+print(tryCatch(lipsitz.test(ologit_final),
                error = function(e) paste("Lipsitz note:", e$message)))
 
-cat("\n--- Pulkstenis-Robinson test ---\n")
-# NOTE: pulkrob.chisq requires at least one CATEGORICAL predictor in the model.
-# Our regressors are continuous, so this test may not run as-is. To enable it,
-# add a categorical control (e.g. income tercile) and pass its name below.
-# Example:
-#   df_model$inc_grp <- cut(df_model$log_gdppc, quantile(df_model$log_gdppc,
-#                           c(0,1/3,2/3,1)), include.lowest = TRUE,
-#                           labels = c("low","mid","high"))
-#   m_cat <- polr(update(final_form, . ~ . + inc_grp), data = df_model)
-#   pulkrob.chisq(m_cat, c("inc_grp"))
-print(tryCatch(pulkrob.chisq(oprobit_final, character(0)),
-               error = function(e) paste("PR note: needs a categorical predictor -", e$message)))
+# add that we cannot use Pulkstenis-Robinson test because we don't have the categorical predictor
+
+# --- 8c. Pseudo-R2 measures --------------------------------------------------
+
+cat("\n--- Pseudo-R2 for final ordered logit ---\n")
+pR2(ologit_final)
+
+cat("\n--- Pseudo-R2 for final ordered probit ---\n")
+pR2(oprobit_final)
 
 
 # =============================================================================
-# SECTION 14: PROPORTIONAL-ODDS ASSUMPTION -- Brant test (req. i)
+# SECTION 9: HYPOTHESIS TESTING THROUGH PREDICTED PROBABILITIES
 # =============================================================================
-# H0: parallel-regression (proportional-odds) assumption holds.
-# Omnibus p >= 0.05 -> no evidence of violation.
-cat("\n--- Brant test (proportional odds) ---\n")
-print(tryCatch(brant(oprobit_final),
-               error = function(e) paste("Brant note:", e$message)))
-# If violated: consider generalized ordered logit (VGAM::vglm, cumulative,
-# parallel = FALSE) or a partial-proportional-odds model.
+# We use predicted probabilities from the final ordered logit model.
+# Ordered probit is used as robustness, but the interpretation is based mainly
+# on the final ordered logit specification selected in Section 7.
+
+# Use ordered probit for predicted probabilities because the Brant test
+# indicated problems with the proportional-odds assumption in ordered logit.
+pred_model <- oprobit_final
+
+# --- 9a. Helper function: predicted probabilities ----------------------------
+
+predict_probs <- function(model, newdata) {
+  probs <- as.data.frame(predict(model, newdata = newdata, type = "probs"))
+  cbind(newdata, probs)
+}
+
+
+# --- 9b. Define baseline values for controls ---------------------------------
+# Continuous controls are held at their sample means.
+# GDP is centred, so log_gdppc_c = 0 means average GDP per capita.
+
+base_log_pop     <- mean(df_model$log_pop)
+base_trade       <- mean(df_model$trade)
+base_log_oilrent <- mean(df_model$log_oilrent)
 
 
 # =============================================================================
-# SECTION 15: ODDS RATIOS (optional, aids interpretation)
+# H1 and H2: Kinship effect and kinship-GDP interaction
 # =============================================================================
-cat("\n--- Odds ratios (exp(beta)) for the final ordered logit ---\n")
-print(round(exp(coef(oprobit_final)), 3))
+# H1: Higher kinship intensity is expected to reduce political freedom.
+# H2: The kinship effect is expected to depend on national wealth.
+
+gdp_levels <- data.frame(
+  gdp_label = c("Low GDP", "Average GDP", "High GDP"),
+  log_gdppc_c = c(
+    quantile(df_model$log_gdppc_c, 0.25),
+    0,
+    quantile(df_model$log_gdppc_c, 0.75)
+  )
+)
+
+kinship_grid <- expand.grid(
+  kinship = seq(0, 1, length.out = 100),
+  gdp_label = gdp_levels$gdp_label
+)
+
+kinship_grid$log_gdppc_c <- gdp_levels$log_gdppc_c[
+  match(kinship_grid$gdp_label, gdp_levels$gdp_label)
+]
+
+kinship_grid$log_pop <- base_log_pop
+kinship_grid$trade <- base_trade
+kinship_grid$log_oilrent <- base_log_oilrent
+
+pred_kinship <- predict_probs(pred_model, kinship_grid)
+
+pred_kinship_long <- pred_kinship %>%
+  tidyr::pivot_longer(
+    cols = c("Not Free", "Partly Free", "Free"),
+    names_to = "freedom_status",
+    values_to = "probability"
+  )
+
+ggplot(pred_kinship_long,
+       aes(x = kinship, y = probability, linetype = gdp_label)) +
+  geom_line(linewidth = 1) +
+  facet_wrap(~ freedom_status) +
+  labs(title = "Predicted Freedom Probabilities by Kinship and GDP Level",
+       x = "Kinship intensity",
+       y = "Predicted probability",
+       linetype = "GDP level") +
+  theme_minimal(base_size = 12)
+
+
+# --- 9c. Compact prediction table for H1/H2 ----------------------------------
+
+kinship_table_data <- expand.grid(
+  kinship = c(0.1, 0.9),
+  gdp_label = gdp_levels$gdp_label
+)
+
+kinship_table_data$log_gdppc_c <- gdp_levels$log_gdppc_c[
+  match(kinship_table_data$gdp_label, gdp_levels$gdp_label)
+]
+
+kinship_table_data$log_pop <- base_log_pop
+kinship_table_data$trade <- base_trade
+kinship_table_data$log_oilrent <- base_log_oilrent
+
+kinship_pred_table <- predict_probs(pred_model, kinship_table_data)
+
+cat("\n--- Predicted probabilities: low vs high kinship at different GDP levels ---\n")
+
+kinship_pred_table_print <- kinship_pred_table
+
+num_cols <- sapply(kinship_pred_table_print, is.numeric)
+kinship_pred_table_print[num_cols] <- round(kinship_pred_table_print[num_cols], 3)
+
+print(kinship_pred_table_print)
 
 # =============================================================================
-# END
+# H3: Oil-rent effect
 # =============================================================================
+# H3: Higher oil wealth is expected to reduce political freedom.
+
+oil_grid <- data.frame(
+  kinship = mean(df_model$kinship),
+  log_gdppc_c = 0,
+  log_pop = base_log_pop,
+  trade = base_trade,
+  log_oilrent = seq(
+    quantile(df_model$log_oilrent, 0.05),
+    quantile(df_model$log_oilrent, 0.95),
+    length.out = 100
+  )
+)
+
+pred_oil <- predict_probs(pred_model, oil_grid)
+
+pred_oil_long <- pred_oil %>%
+  tidyr::pivot_longer(
+    cols = c("Not Free", "Partly Free", "Free"),
+    names_to = "freedom_status",
+    values_to = "probability"
+  )
+
+ggplot(pred_oil_long,
+       aes(x = log_oilrent, y = probability)) +
+  geom_line(linewidth = 1) +
+  facet_wrap(~ freedom_status) +
+  labs(title = "Predicted Freedom Probabilities by Oil-Rent Dependence",
+       x = "Log(1 + oil rents)",
+       y = "Predicted probability") +
+  theme_minimal(base_size = 12)
+
+
+# --- 9d. Compact prediction table for H3 -------------------------------------
+
+oil_table_data <- data.frame(
+  kinship = mean(df_model$kinship),
+  log_gdppc_c = 0,
+  log_pop = base_log_pop,
+  trade = base_trade,
+  log_oilrent = quantile(df_model$log_oilrent, c(0.10, 0.50, 0.90))
+)
+
+oil_table_data$oil_level <- c("Low oil rents", "Median oil rents", "High oil rents")
+
+oil_pred_table <- predict_probs(pred_model, oil_table_data)
+
+cat("\n--- Predicted probabilities: oil-rent scenarios ---\n")
+
+oil_pred_table_print <- oil_pred_table
+
+num_cols <- sapply(oil_pred_table_print, is.numeric)
+oil_pred_table_print[num_cols] <- round(oil_pred_table_print[num_cols], 3)
+
+print(oil_pred_table_print)
+
+
