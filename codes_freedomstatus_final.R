@@ -351,21 +351,18 @@ print(polr_table(ologit_general))
 ologit_gts_1 <- polr(freedom ~ kinship + log_gdppc_c + log_pop + urban_pct +
                        trade + internet + log_oilrent + kinship:log_gdppc_c,
                      data = df_model, method = "logistic", Hess = TRUE)
-cat("\nStep 1, can we drop unemp?\n")
 print(anova(ologit_general, ologit_gts_1))
 
 # drop urban_pct
 ologit_gts_2 <- polr(freedom ~ kinship + log_gdppc_c + log_pop +
                        trade + internet + log_oilrent + kinship:log_gdppc_c,
                      data = df_model, method = "logistic", Hess = TRUE)
-cat("\nStep 2, can we jointly drop unemp and urban_pct?\n")
 print(anova(ologit_general, ologit_gts_2))
 
 # internet
 ologit_gts_3 <- polr(freedom ~ kinship + log_gdppc_c + log_pop +
                        trade + log_oilrent + kinship:log_gdppc_c,
                      data = df_model, method = "logistic", Hess = TRUE)
-cat("\nStep 3, can we jointly drop unemp, urban_pct and internet?\n")
 print(anova(ologit_general, ologit_gts_3))
 
 ologit_final <- ologit_gts_3
