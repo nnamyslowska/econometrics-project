@@ -19,11 +19,13 @@ library(dplyr)
 library(tidyr)
 library(lmtest)        # lrtest()
 library(car)           # vif()
+library(marginaleffects)
+library(knitr)
+library(kableExtra)
 
 Sys.setenv(LANG = "en")
 options(scipen = 100)
 
-# Set the working directory to the script location (RStudio)
 setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
 
 
@@ -31,18 +33,17 @@ setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
 # SECTION 1: load and merge
 # =============================================================================
 
-qog     <- read.csv("data/qog_std_cs_jan26.csv", stringsAsFactors = FALSE)
-kinship <- read.csv("data/kinship_df.csv",        stringsAsFactors = FALSE)
+qog <- read.csv("data/qog_std_cs_jan26.csv", stringsAsFactors = FALSE)
+kinship <- read.csv("data/kinship_df.csv", stringsAsFactors = FALSE)
 
-cat("QoG dimensions:    ", dim(qog),     "\n")
-cat("Kinship dimensions:", dim(kinship), "\n")
+cat("QoG dimensions: ", dim(qog), "\n")
+cat("Kinship dimensions: ", dim(kinship), "\n")
 
-# Inner join on ISO-3 codes: keep only countries present in both datasets,
-# because the kinship score is the key explanatory variable.
+# Inner join on ISO-3 codes
 df <- merge(qog, kinship, by.x = "ccodealp", by.y = "isocode", all = FALSE)
 cat("Countries after inner join:", nrow(df), "\n")
 
-# Merge audit: record which countries matched and which were dropped.
+# Record which countries matched and which were dropped
 qog_lookup <- qog[, c("ccodealp", "cname")]
 names(qog_lookup) <- c("iso", "qog_country")
 kinship_lookup <- kinship
@@ -68,8 +69,6 @@ write.csv(merge_audit, "merge_audit_qog_kinship.csv", row.names = FALSE)
 # =============================================================================
 # SECTION 2: build the dependent variable
 # =============================================================================
-# QoG codes fh_status numerically: 1 = Free, 2 = Partly Free, 3 = Not Free.
-# We reverse it into an ordered factor so that a higher category means more free.
 
 cat("\nRaw fh_status values:\n")
 print(table(df$fh_status, useNA = "ifany"))
@@ -86,8 +85,6 @@ print(table(df$freedom, useNA = "ifany"))
 # =============================================================================
 # SECTION 3: missing value screen and candidate selection
 # =============================================================================
-# We first compute missingness for every variable, then keep only variables
-# with acceptable coverage, and finally select a theory-driven candidate set.
 
 missing_all <- data.frame(
   variable    = names(df),
@@ -100,7 +97,7 @@ cat("\nTotal variables in merged dataset:", nrow(missing_all), "\n")
 cat("Ten variables with the most missing values:\n")
 print(head(missing_all, 10), row.names = FALSE)
 
-# Coverage screen: a variable is viable if missingness is at most 20 percent.
+# Variable missingness %
 threshold <- 20
 bands <- cut(missing_all$pct_missing,
              breaks = c(-Inf, 5, 10, 20, 50, 80, Inf),
@@ -113,14 +110,7 @@ cat("\nVariables passing the", threshold, "percent screen:",
     nrow(viable), "of", nrow(missing_all), "\n")
 write.csv(viable, "viable_variables_under_20pct_missing.csv", row.names = FALSE)
 
-# Theory-driven candidate set. Passing the coverage screen is not enough:
-# governance, democracy, rights and corruption indicators (vdem_*, wbgi_*,
-# ciri_*, fh_*, bmr_*, ti_cpi, ...) are excluded because they are either
-# alternative measures of the outcome or lie on the pathway from kinship to
-# freedom, which would create bad-control bias. Democratic duration is
-# excluded because it is mechanically tied to current freedom status, and
-# development outcomes such as life expectancy or fertility are excluded to
-# avoid over-controlling.
+# Candidate variables selection
 key_vars <- c("fh_status", "kinship_score", "wdi_gdpcapcon2015",
               "wdi_popurb", "wdi_pop", "wdi_trade", "wdi_internet",
               "wdi_unempilo", "wdi_oilrent")
@@ -137,7 +127,6 @@ cat("\nCoverage check on the candidate set:\n")
 print(key_check[order(key_check$pct_missing), ], row.names = FALSE)
 stopifnot(all(key_check$viable))
 
-# Maximum sample available across all candidate variables.
 cat("\nComplete cases across all candidate variables:",
     sum(complete.cases(df[, key_vars])), "of", nrow(df), "\n")
 
@@ -148,34 +137,73 @@ cat("\nComplete cases across all candidate variables:",
 # GDP per capita, population and oil rents are right skewed, so we log them.
 # Oil rents contain zeros, so we use log(1 + oil rents) to keep those countries.
 
+# Graph 1: raw distributions of selected variables before transformations
+raw_dist_data <- df %>%
+  transmute(
+    kinship = kinship_score,
+    gdppc = wdi_gdpcapcon2015,
+    population = wdi_pop,
+    urban_pct = wdi_popurb,
+    trade = wdi_trade,
+    internet = wdi_internet,
+    unemp = wdi_unempilo,
+    oilrent = wdi_oilrent
+  ) %>%
+  filter(complete.cases(.)) %>%
+  pivot_longer(cols = everything(),
+               names_to = "variable",
+               values_to = "value")
+
+raw_dist_data$variable <- factor(
+  raw_dist_data$variable,
+  levels = c("kinship", "gdppc", "population", "urban_pct",
+             "trade", "internet", "unemp", "oilrent"),
+  labels = c("Kinship", "GDP per capita", "Population", "Urbanisation",
+             "Trade openness", "Internet access", "Unemployment", "Oil rents")
+)
+
+g_raw_distributions <- ggplot(raw_dist_data, aes(x = value)) +
+  geom_histogram(bins = 20, fill = "grey70", colour = "white") +
+  facet_wrap(~ variable, scales = "free", ncol = 3) +
+  labs(title = "Raw distributions of independent variables",
+       x = NULL, y = "Number of countries") +
+  theme_minimal(base_size = 11) +
+  theme(
+    panel.grid.minor = element_blank(),
+    strip.text = element_text(face = "bold")
+  )
+
+print(g_raw_distributions)
+ggsave("fig_raw_variable_distributions.png", g_raw_distributions,
+       width = 9, height = 7, dpi = 300)
+
 df_model_raw <- df %>%
   transmute(
-    country     = cname,
-    iso         = ccodealp,
-    freedom     = freedom,
-    kinship     = kinship_score,
-    log_gdppc   = log(wdi_gdpcapcon2015),
-    log_pop     = log(wdi_pop),
-    urban_pct   = wdi_popurb,
-    trade       = wdi_trade,
-    internet    = wdi_internet,
-    unemp       = wdi_unempilo,
+    country = cname,
+    iso = ccodealp,
+    freedom = freedom,
+    kinship = kinship_score,
+    log_gdppc = log(wdi_gdpcapcon2015),
+    log_pop = log(wdi_pop),
+    urban_pct = wdi_popurb,
+    trade = wdi_trade,
+    internet = wdi_internet,
+    unemp = wdi_unempilo,
     log_oilrent = log1p(wdi_oilrent)
   )
 
 model_vars <- c("freedom", "kinship", "log_gdppc", "log_pop", "urban_pct",
                 "trade", "internet", "unemp", "log_oilrent")
 
-# Complete-case sample: a country is kept only if no model variable is missing.
+# Country is kept only if no model variable is missing
 df_model <- df_model_raw %>%
   filter(complete.cases(across(all_of(model_vars))))
 
 cat("\nFinal complete-case sample:", nrow(df_model), "countries\n")
 
-# Centre log GDP so the kinship main effect is read at average income.
+# Centering log GDP so the kinship main effect is read at average income
 df_model$log_gdppc_c <- df_model$log_gdppc - mean(df_model$log_gdppc)
 
-# Sample-loss summary used in the paper.
 sample_loss <- data.frame(
   stage = c("Merged dataset", "Complete-case model sample",
             "Excluded for missing model variables"),
@@ -199,23 +227,33 @@ write.csv(df_model, "data/df_model_clean_complete_cases.csv", row.names = FALSE)
 # =============================================================================
 
 Desc(df_model$freedom, main = "Freedom status (ordered DV)")
-Desc(df_model$kinship,  main = "Kinship intensity score")
+Desc(df_model$kinship, main = "Kinship intensity score")
 
 continuous_vars <- c("kinship", "log_gdppc", "log_pop", "urban_pct",
                      "trade", "internet", "unemp", "log_oilrent")
 cat("\nSummary statistics, continuous variables:\n")
 print(summary(df_model[, continuous_vars]))
 
-# Graph 1: distribution of the dependent variable.
-g_freedom <- ggplot(df_model, aes(x = freedom)) +
-  geom_bar(fill = "grey70", colour = "white") +
+# Graph 1: distribution of the dependent variable
+freedom_counts <- as.data.frame(table(df_model$freedom))
+names(freedom_counts) <- c("freedom", "n")
+
+g_freedom <- ggplot(freedom_counts, aes(x = freedom, y = n)) +
+  geom_col(fill = "grey70", colour = "white") +
+  geom_text(aes(label = n), vjust = -0.3, size = 4) +
   labs(title = "Distribution of freedom status",
        x = "Freedom status", y = "Number of countries") +
-  theme_minimal(base_size = 13)
-print(g_freedom)
-ggsave("fig_freedom_distribution.png", g_freedom, width = 7, height = 4.5, dpi = 300)
+  theme_minimal(base_size = 13) +
+  theme(
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank()
+  )
 
-# Graph 2: kinship by freedom status (core descriptive relationship).
+print(g_freedom)
+ggsave("fig_freedom_distribution.png", g_freedom,
+       width = 7, height = 4.5, dpi = 300)
+
+# Graph 2: kinship by freedom status
 g_kin_box <- ggplot(df_model, aes(x = freedom, y = kinship)) +
   geom_boxplot(fill = "grey70", colour = "grey30") +
   labs(title = "Kinship intensity by freedom status",
@@ -224,7 +262,7 @@ g_kin_box <- ggplot(df_model, aes(x = freedom, y = kinship)) +
 print(g_kin_box)
 ggsave("fig_kinship_by_freedom.png", g_kin_box, width = 7, height = 4.5, dpi = 300)
 
-# Graph 3: GDP per capita by freedom status.
+# Graph 3: GDP per capita by freedom status
 g_gdp_box <- ggplot(df_model, aes(x = freedom, y = log_gdppc)) +
   geom_boxplot(fill = "grey70", colour = "grey30") +
   labs(title = "GDP per capita by freedom status",
@@ -233,7 +271,17 @@ g_gdp_box <- ggplot(df_model, aes(x = freedom, y = log_gdppc)) +
 print(g_gdp_box)
 ggsave("fig_gdp_by_freedom.png", g_gdp_box, width = 7, height = 4.5, dpi = 300)
 
-# Graph 4: correlation heatmap of continuous regressors.
+# Graph 4: oil-rent dependence by freedom status
+g_oil_box <- ggplot(df_model, aes(x = freedom, y = log_oilrent)) +
+  geom_boxplot(fill = "grey70", colour = "grey30") +
+  labs(title = "Oil-rent dependence by freedom status",
+       x = "Freedom status", y = "Log(1 + oil rents)") +
+  theme_minimal(base_size = 13)
+
+print(g_oil_box)
+ggsave("fig_oilrent_by_freedom.png", g_oil_box, width = 7, height = 4.5, dpi = 300)
+
+# Graph 5: correlation heatmap of continuous regressors
 cor_matrix <- round(cor(df_model[, continuous_vars], use = "complete.obs"), 2)
 cor_df <- as.data.frame(as.table(cor_matrix))
 names(cor_df) <- c("Variable_1", "Variable_2", "Correlation")
@@ -256,22 +304,22 @@ stopifnot(is.ordered(df_model$freedom))
 form_general <- freedom ~ kinship + log_gdppc_c + log_pop + urban_pct +
   trade + internet + unemp + log_oilrent + kinship:log_gdppc_c
 
-# LPM benchmark only: treats the ordered outcome as numeric 1/2/3.
+# LPM benchmark only - treats the ordered outcome as numeric 1/2/3
 df_model$freedom_num <- as.numeric(df_model$freedom)
 LPM_general     <- lm(update(form_general, freedom_num ~ .), data = df_model)
 ologit_general  <- polr(form_general, data = df_model, method = "logistic", Hess = TRUE)
 oprobit_general <- polr(form_general, data = df_model, method = "probit",   Hess = TRUE)
 
-# Helper: coefficient table with p-values for polr models (polr reports only t).
+# coefficient table with p-values for polr models
 polr_table <- function(model) {
   ct <- coef(summary(model))
   slopes <- ct[!rownames(ct) %in% names(model$zeta), , drop = FALSE]
   p_values <- 2 * pnorm(abs(slopes[, "t value"]), lower.tail = FALSE)
   out <- data.frame(
-    Estimate  = round(slopes[, "Value"], 4),
+    Estimate = round(slopes[, "Value"], 4),
     Std_Error = round(slopes[, "Std. Error"], 4),
-    t_value   = round(slopes[, "t value"], 4),
-    p_value   = round(p_values, 4),
+    t_value = round(slopes[, "t value"], 4),
+    p_value = round(p_values, 4),
     Signif = cut(p_values, breaks = c(-Inf, 0.001, 0.01, 0.05, 0.1, Inf),
                  labels = c("***", "**", "*", ".", "")),
     row.names = rownames(slopes)
@@ -286,9 +334,9 @@ cat("\nInformation criteria (logit / probit):\n")
 cat("AIC:", AIC(ologit_general), "/", AIC(oprobit_general), "\n")
 cat("BIC:", BIC(ologit_general), "/", BIC(oprobit_general), "\n")
 
-# Joint significance against an intercept-only model.
-ologit_null  <- polr(freedom ~ 1, data = df_model, method = "logistic", Hess = TRUE)
-oprobit_null <- polr(freedom ~ 1, data = df_model, method = "probit",   Hess = TRUE)
+# Joint significance against an intercept-only model
+ologit_null <- polr(freedom ~ 1, data = df_model, method = "logistic", Hess = TRUE)
+oprobit_null <- polr(freedom ~ 1, data = df_model, method = "probit", Hess = TRUE)
 cat("\nLR test, general ordered logit vs null:\n");  print(lrtest(ologit_general, ologit_null))
 cat("\nLR test, general ordered probit vs null:\n"); print(lrtest(oprobit_general, oprobit_null))
 
@@ -296,41 +344,35 @@ cat("\nLR test, general ordered probit vs null:\n"); print(lrtest(oprobit_genera
 # =============================================================================
 # SECTION 7: general-to-specific selection
 # =============================================================================
-# We start from the general ordered logit, drop weak controls one at a time,
-# and check each restriction with a likelihood ratio test against the original
-# general model. kinship and log_gdppc_c are kept because they form the
-# interaction term (hierarchy principle).
-
 cat("\nStep 0, general ordered logit:\n")
 print(polr_table(ologit_general))
 
-# Step 1: drop unemp (least significant control).
+# drop unemp
 ologit_gts_1 <- polr(freedom ~ kinship + log_gdppc_c + log_pop + urban_pct +
                        trade + internet + log_oilrent + kinship:log_gdppc_c,
                      data = df_model, method = "logistic", Hess = TRUE)
 cat("\nStep 1, can we drop unemp?\n")
 print(anova(ologit_general, ologit_gts_1))
 
-# Step 2: also drop urban_pct.
+# drop urban_pct
 ologit_gts_2 <- polr(freedom ~ kinship + log_gdppc_c + log_pop +
                        trade + internet + log_oilrent + kinship:log_gdppc_c,
                      data = df_model, method = "logistic", Hess = TRUE)
 cat("\nStep 2, can we jointly drop unemp and urban_pct?\n")
 print(anova(ologit_general, ologit_gts_2))
 
-# Step 3: also drop internet.
+# internet
 ologit_gts_3 <- polr(freedom ~ kinship + log_gdppc_c + log_pop +
                        trade + log_oilrent + kinship:log_gdppc_c,
                      data = df_model, method = "logistic", Hess = TRUE)
 cat("\nStep 3, can we jointly drop unemp, urban_pct and internet?\n")
 print(anova(ologit_general, ologit_gts_3))
 
-# All three restrictions are accepted (p well above 0.05), so this is the final model.
 ologit_final <- ologit_gts_3
-final_form   <- formula(ologit_final)
+final_form <- formula(ologit_final)
 
 oprobit_final <- polr(final_form, data = df_model, method = "probit", Hess = TRUE)
-LPM_final     <- lm(update(final_form, freedom_num ~ .), data = df_model)
+LPM_final <- lm(update(final_form, freedom_num ~ .), data = df_model)
 
 cat("\nFinal ordered logit:\n");  print(polr_table(ologit_final))
 cat("\nFinal ordered probit:\n"); print(polr_table(oprobit_final))
@@ -341,7 +383,7 @@ cat("BIC:", BIC(ologit_general), "/", BIC(ologit_final), "\n")
 cat("\nLR test, final ordered logit vs null:\n")
 print(lrtest(ologit_final, ologit_null))
 
-# Publication table: general and final LPM, ordered logit, ordered probit.
+# Table: general and final LPM, ordered logit, ordered probit
 screenreg(list(LPM_general, ologit_general, oprobit_general,
                LPM_final, ologit_final, oprobit_final),
           custom.model.names = c("LPM general", "Logit general", "Probit general",
@@ -358,9 +400,11 @@ htmlreg(list(LPM_general, ologit_general, oprobit_general,
         custom.note = "*** p<0.001; ** p<0.01; * p<0.05; . p<0.1",
         caption = "General and final models", caption.above = TRUE)
 
-# Multicollinearity check on the final LPM. Ordinary VIF is inflated by the
-# interaction, so the interaction-aware version is the one to read.
-cat("\nVIF, final LPM (interaction-aware):\n")
+# Multicollinearity check on the final LPM. Ordinary VIF is inflated by the interaction
+cat("\nOrdinary VIF, final LPM:\n")
+print(vif(LPM_final))
+
+cat("\nInteraction-aware GVIF, final LPM:\n")
 print(vif(LPM_final, type = "predictor"))
 
 
@@ -379,52 +423,50 @@ print(logitgof(df_model$freedom, fitted(ologit_final), g = 10, ord = TRUE))
 cat("\nLipsitz test:\n")
 print(lipsitz.test(ologit_final))
 
-# The Pulkstenis-Robinson test cannot be applied here: it requires at least one
-# categorical predictor to form covariate-pattern strata, and the final model
-# uses only continuous regressors. We report this rather than force the test.
+# The Pulkstenis-Robinson test cannot be applied here: it requires at least one categorical predictor
 cat("\nPulkstenis-Robinson test:\n")
 print(tryCatch(pulkrob.chisq(ologit_final, character(0)),
                error = function(e) "Not applicable: the model has no categorical predictor."))
 
-# 8c. Pseudo R2: McFadden, McKelvey-Zavoina, plus count R2 and adjusted count R2.
+# 8c. Pseudo R2
+
 cat("\nMcFadden pseudo R2 (logit / probit):\n")
-print(pR2(ologit_final)["McFadden"])
-print(pR2(oprobit_final)["McFadden"])
+cat("Logit: ", round(pR2(ologit_final)["McFadden"], 4), "\n")
+cat("Probit:", round(pR2(oprobit_final)["McFadden"], 4), "\n")
+
+mz_r2 <- function(model) {
+  beta <- coef(model)
+  X <- model.matrix(model)[, names(beta), drop = FALSE]
+  xb <- as.vector(X %*% beta)
+  var_xb <- var(xb)
+  sigma2 <- if (model$method == "probit") 1 else pi^2 / 3
+  round(var_xb / (var_xb + sigma2), 4)
+}
 
 cat("\nMcKelvey-Zavoina pseudo R2:\n")
-print(tryCatch(PseudoR2(ologit_final, which = "McKelveyZavoina"),
-               error = function(e) paste("note:", e$message)))
-print(tryCatch(PseudoR2(oprobit_final, which = "McKelveyZavoina"),
-               error = function(e) paste("note:", e$message)))
+cat("Logit: ",  mz_r2(ologit_final),  "\n")
+cat("Probit:", mz_r2(oprobit_final), "\n")
 
 count_r2 <- function(model) {
-  obs  <- as.character(model.frame(model)[[1]])
+  obs <- as.character(model.frame(model)[[1]])
   pred <- as.character(predict(model, type = "class"))
-  
   n <- length(obs)
   ncorrect <- sum(pred == obs)
   nmode <- max(table(obs))
-  
-  c(
-    CountR2 = round(ncorrect / n, 3),
-    AdjCountR2 = round((ncorrect - nmode) / (n - nmode), 3)
-  )
+  c(CountR2 = round(ncorrect / n, 3),
+    AdjCountR2 = round((ncorrect - nmode) / (n - nmode), 3))
 }
 
-cat("\nCount R2 and adjusted count R2 (logit):\n")
-print(count_r2(ologit_final))
+cat("\nCount R2 and adjusted count R2 (logit):\n"); print(count_r2(ologit_final))
+cat("Count R2 and adjusted count R2 (probit):\n"); print(count_r2(oprobit_final))
 
-cat("\nCount R2 and adjusted count R2 (probit):\n")
-print(count_r2(oprobit_final))
-
-# 8d. Linktest for specification (ordered version). We want the linear term
-# significant and the squared term insignificant.
+# 8d. Linktest for specification 
 linktest_ordered <- function(model) {
   beta <- coef(model)
-  X    <- model.matrix(model)[, names(beta), drop = FALSE]
+  X <- model.matrix(model)[, names(beta), drop = FALSE]
   yhat <- as.vector(X %*% beta)
-  dd   <- data.frame(y = model.frame(model)[[1]], yhat = yhat, yhat2 = yhat^2)
-  lt   <- polr(y ~ yhat + yhat2, data = dd, method = model$method, Hess = TRUE)
+  dd <- data.frame(y = model.frame(model)[[1]], yhat = yhat, yhat2 = yhat^2)
+  lt <- polr(y ~ yhat + yhat2, data = dd, method = model$method, Hess = TRUE)
   polr_table(lt)
 }
 cat("\nLinktest, final ordered logit:\n")
@@ -432,15 +474,46 @@ print(linktest_ordered(ologit_final))
 cat("\nLinktest, final ordered probit:\n")
 print(linktest_ordered(oprobit_final))
 
-# 8e. Marginal effects per category for the final model. Ordered marginal
-# effects differ by outcome and sum to zero across categories for each variable.
-# We use the ordered probit, which is the preferred specification for
-# interpretation (see the predicted probabilities below).
-cat("\nMarginal effects, final ordered probit (ocME):\n")
-print(tryCatch(ocME(oprobit_final), error = function(e) paste("note:", e$message)))
-cat("\nMarginal effects, final ordered logit (ocME):\n")
-print(tryCatch(ocME(ologit_final), error = function(e) paste("note:", e$message)))
+# 8e. Marginal effects per category for probit
+ame_probit <- avg_slopes(oprobit_final, type = "probs")
+print(ame_probit)
 
+# Marginal effects per category for logit
+ame_logit <- avg_slopes(ologit_final, type = "probs")
+print(ame_logit)
+
+sig_stars <- function(p) {
+  ifelse(p < 0.001, "***",
+         ifelse(p < 0.01,  "**",
+                ifelse(p < 0.05,  "*",
+                       ifelse(p < 0.1, ".", ""))))
+}
+
+var_labels <- c(
+  kinship = "Kinship",
+  log_gdppc_c = "Log GDP per capita (centred)",
+  log_oilrent = "Log(1 + oil rents)",
+  log_pop = "Log population",
+  trade = "Trade openness"
+)
+
+ame_df <- as.data.frame(ame_probit)
+
+ame_table <- ame_df |>
+  mutate(
+    stars = sig_stars(p.value),
+    cell = sprintf("%.3f%s (%.3f)", estimate, stars, std.error)
+  ) |>
+  dplyr::select(term, group, cell) |>
+  pivot_wider(
+    names_from = group,
+    values_from = cell
+  ) |>
+  mutate(term = var_labels[term]) |>
+  dplyr::select(term, "Not Free", "Partly Free", "Free") |>
+  dplyr::rename(Variable = term)
+
+print(ame_table, row.names = FALSE)
 
 # =============================================================================
 # SECTION 9: predicted probabilities and hypothesis testing
@@ -455,13 +528,13 @@ predict_probs <- function(model, newdata) {
   cbind(newdata, probs)
 }
 
-base_log_pop     <- mean(df_model$log_pop)
-base_trade       <- mean(df_model$trade)
+base_log_pop <- mean(df_model$log_pop)
+base_trade <- mean(df_model$trade)
 base_log_oilrent <- mean(df_model$log_oilrent)
 
 # H1 and H2: kinship and the kinship-by-GDP interaction.
 gdp_levels <- data.frame(
-  gdp_label  = c("Low GDP", "Average GDP", "High GDP"),
+  gdp_label = c("Low GDP", "Average GDP", "High GDP"),
   log_gdppc_c = c(quantile(df_model$log_gdppc_c, 0.25), 0,
                   quantile(df_model$log_gdppc_c, 0.75))
 )
@@ -470,8 +543,8 @@ kinship_grid <- expand.grid(kinship = seq(0, 1, length.out = 100),
                             gdp_label = gdp_levels$gdp_label)
 kinship_grid$log_gdppc_c <- gdp_levels$log_gdppc_c[match(kinship_grid$gdp_label,
                                                          gdp_levels$gdp_label)]
-kinship_grid$log_pop     <- base_log_pop
-kinship_grid$trade       <- base_trade
+kinship_grid$log_pop <- base_log_pop
+kinship_grid$trade <- base_trade
 kinship_grid$log_oilrent <- base_log_oilrent
 
 pred_kinship_long <- predict_probs(pred_model, kinship_grid) %>%
@@ -492,8 +565,8 @@ kinship_table_data <- expand.grid(kinship = c(0.1, 0.9),
                                   gdp_label = gdp_levels$gdp_label)
 kinship_table_data$log_gdppc_c <- gdp_levels$log_gdppc_c[match(kinship_table_data$gdp_label,
                                                                gdp_levels$gdp_label)]
-kinship_table_data$log_pop     <- base_log_pop
-kinship_table_data$trade       <- base_trade
+kinship_table_data$log_pop <- base_log_pop
+kinship_table_data$trade <- base_trade
 kinship_table_data$log_oilrent <- base_log_oilrent
 kinship_pred_table <- predict_probs(pred_model, kinship_table_data)
 cat("\nPredicted probabilities, low vs high kinship by GDP level:\n")
