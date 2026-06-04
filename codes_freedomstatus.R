@@ -1,11 +1,10 @@
 # =============================================================================
-# Kinship Intensity and Political Freedom: An Ordered Logit / Probit Analysis
-# =============================================================================
+# Kinship intensity and political freedom
 #
 # DEPENDENT VARIABLE: fh_status (Freedom House Freedom Status)
 #   3 ordered categories. Built here as an ORDERED FACTOR:
-#       Not Free  <  Partly Free  <  Free      (higher = MORE free)
-#   -> ordered logit / ordered probit (proportional-odds models)
+#       Not Free  <  Partly Free  <  Free (higher = MORE free)
+#   -> ordered logit / ordered probit
 #
 # KEY INDEPENDENT VARIABLE: kinship (ekne kinship intensity index) [0, 1]
 #   0 = nuclear-family society ; 1 = tight kinship / cousin-marriage networks
@@ -14,23 +13,17 @@
 #   that sustain political freedom. Expected sign: NEGATIVE (less free).
 #
 # CONTROLS (general model):
-#   log_gdppc  (CENTRED)  log_pop   urban_pct   unemp   trade   internet
-# INTERACTION (requirement c): kinship x log_gdppc_c
-#   -> does wealth offset the kinship penalty on freedom?
-#
-# DROPPED from earlier draft (bad / circular controls):
-#   cpi, govt_eff  -> same construct as the outcome (corruption / state quality)
-#   dem_duration   -> near-circular with current freedom status
+#   log_gdppc  (CENTERED)  log_pop   urban_pct   unemp   trade   internet
+#   INTERACTION (requirement c): kinship x log_gdppc_c
 #
 # DATA:
-#   QoG Standard Dataset Jan 2026 (Teorell et al.) -- qog_std_cs_jan26.csv
-#   Kinship intensity index -- kinship_df.csv
+#   QoG Standard Dataset Jan 2026 (Teorell et al.) - qog_std_cs_jan26.csv
+#   Kinship intensity index - kinship_df.csv
 # =============================================================================
 
 
-# -----------------------------------------------------------------------------
 # 0. PACKAGES
-# -----------------------------------------------------------------------------
+
 # install.packages(c("MASS","brant","pscl","generalhoslem","erer","DescTools",
 #                    "stargazer","ggplot2","dplyr","lmtest","car","sandwich",
 #                    "nortest"))
@@ -54,14 +47,12 @@ Sys.setenv(LANG = "en")
 options(scipen = 100)
 
 
-# =============================================================================
-# SECTION 1: LOAD & MERGE
-# =============================================================================
+# SECTION 1: Loading and Merging
 
-qog     <- read.csv("data/qog_std_cs_jan26.csv", stringsAsFactors = FALSE)
-kinship <- read.csv("data/kinship_df.csv",        stringsAsFactors = FALSE)
+qog <- read.csv("data/qog_std_cs_jan26.csv", stringsAsFactors = FALSE)
+kinship <- read.csv("data/kinship_df.csv", stringsAsFactors = FALSE)
 
-cat("QoG dimensions:     ", dim(qog),     "\n")
+cat("QoG dimensions: ", dim(qog),     "\n")
 cat("Kinship dimensions: ", dim(kinship), "\n")
 
 # Inner join on ISO-3 country codes (ccodealp in QoG; isocode in kinship)
@@ -69,25 +60,17 @@ df <- merge(qog, kinship, by.x = "ccodealp", by.y = "isocode", all = FALSE)
 cat("Countries after inner join:", nrow(df), "\n")
 
 
-# =============================================================================
 # SECTION 2: BUILD THE DEPENDENT VARIABLE  (VERIFY CODING FIRST!)
-# =============================================================================
-# Inspect how fh_status is stored in YOUR merged file before recoding.
+
 cat("\n--- Raw fh_status values ---\n")
 print(table(df$fh_status, useNA = "ifany"))
 
-# QoG convention is typically NUMERIC: 1 = Free, 2 = Partly Free, 3 = Not Free.
-# >>> CONFIRM against the codebook entry for fh_status. <<<
-# We build an ordered factor running LOW->HIGH freedom so a POSITIVE coefficient
-# means "more free":  Not Free (1) < Partly Free (2) < Free (3).
-
 if (is.numeric(df$fh_status)) {
   df$freedom <- factor(df$fh_status,
-                       levels = c(3, 2, 1),                 # 3=NotFree ... 1=Free
+                       levels = c(3, 2, 1), 
                        labels = c("Not Free", "Partly Free", "Free"),
                        ordered = TRUE)
 } else {
-  # If stored as text labels, just order them explicitly:
   df$freedom <- factor(df$fh_status,
                        levels = c("Not Free", "Partly Free", "Free"),
                        ordered = TRUE)
@@ -98,9 +81,7 @@ print(table(df$freedom, useNA = "ifany"))
 
 cat("Countries with missing Freedom House status:", sum(is.na(df$freedom)), "\n")
 
-# =============================================================================
-# SECTION 3: MISSING-VALUE DIAGNOSTICS (key variables)
-# =============================================================================
+# SECTION 3: MISSING-VALUE DIAGNOSTICS
 key_vars <- c("fh_status", "kinship_score", "wdi_gdpcapcon2015", "wdi_pop",
               "wdi_popurb", "wdi_unempilo", "wdi_trade", "dr_ig")
 
@@ -114,9 +95,7 @@ cat("\n--- Missing values: key model variables ---\n")
 print(missing_key, row.names = FALSE)
 
 
-# =============================================================================
-# SECTION 4: VARIABLE CONSTRUCTION  (complete-case working sample)
-# =============================================================================
+# SECTION 4: VARIABLE CONSTRUCTION
 df_model <- df %>%
   transmute(
     country   = cname,
@@ -132,18 +111,15 @@ df_model <- df %>%
   ) %>%
   filter(complete.cases(.))
 
-# CENTRE log_gdppc so the kinship main effect is interpreted at MEAN income
+# centre log_gdppc so the kinship main effect is interpreted at mean income
 df_model$log_gdppc_c <- df_model$log_gdppc - mean(df_model$log_gdppc)
 
 cat("\nWorking sample (complete cases):", nrow(df_model), "countries\n")
 cat("Outcome distribution:\n"); print(table(df_model$freedom))
-# NOTE: if 'trade' (highest missingness) costs too many countries, drop it and
-#       re-run; report the larger N in the paper.
 
 
-# =============================================================================
-# SECTION 5: DESCRIPTIVE STATISTICS (lab-standard Desc())
-# =============================================================================
+# SECTION 5: DESCRIPTIVE STATISTICS
+
 Desc(df_model$freedom, main = "Freedom Status (ordered DV)")
 Desc(df_model$kinship, main = "Kinship intensity score (ekne)")
 
@@ -152,16 +128,15 @@ summary(df_model[, c("kinship","log_gdppc","log_pop","urban_pct",
                      "unemp","trade","internet")])
 
 
-# =============================================================================
 # SECTION 6: VISUAL INSPECTION
-# =============================================================================
-# Plot 1 -- DV category counts
+
+# Plot 1 - DV category counts
 ggplot(df_model, aes(x = freedom, fill = freedom)) +
   geom_bar(alpha = 0.85, colour = "white") +
   labs(title = "Distribution of Freedom Status", x = NULL, y = "Count") +
   theme_minimal(base_size = 13) + theme(legend.position = "none")
 
-# Plot 2 -- kinship distribution by freedom category (core relationship)
+# Plot 2 - kinship distribution by freedom category 
 ggplot(df_model, aes(x = freedom, y = kinship, fill = freedom)) +
   geom_boxplot(alpha = 0.8) +
   labs(title = "Kinship intensity across Freedom Status",
@@ -169,7 +144,7 @@ ggplot(df_model, aes(x = freedom, y = kinship, fill = freedom)) +
        x = NULL, y = "Kinship score (ekne)") +
   theme_minimal(base_size = 13) + theme(legend.position = "none")
 
-# Plot 3 -- kinship vs income, coloured by freedom (motivates interaction)
+# Plot 3 - kinship vs income, coloured by freedom 
 ggplot(df_model, aes(x = kinship, y = log_gdppc, colour = freedom)) +
   geom_point(alpha = 0.8, size = 2.2) +
   labs(title = "Kinship vs income by freedom status",
@@ -177,10 +152,10 @@ ggplot(df_model, aes(x = kinship, y = log_gdppc, colour = freedom)) +
        x = "Kinship score (ekne)", y = "log GDP per capita") +
   theme_minimal(base_size = 13)
 
-# Plot 4 -- correlation heatmap (continuous variables)
-cor_vars   <- c("kinship","log_gdppc","log_pop","urban_pct","unemp","trade","internet")
+# Plot 4 - correlation heatmap 
+cor_vars <- c("kinship","log_gdppc","log_pop","urban_pct","unemp","trade","internet")
 cor_matrix <- round(cor(df_model[, cor_vars], use = "complete.obs"), 2)
-cor_df     <- as.data.frame(as.table(cor_matrix)); names(cor_df) <- c("V1","V2","r")
+cor_df <- as.data.frame(as.table(cor_matrix)); names(cor_df) <- c("V1","V2","r")
 ggplot(cor_df, aes(V1, V2, fill = r)) +
   geom_tile(colour = "white") + geom_text(aes(label = r), size = 3) +
   scale_fill_gradient2(low = "#C94040", mid = "white", high = "#3A7DC9",
@@ -190,46 +165,37 @@ ggplot(cor_df, aes(V1, V2, fill = r)) +
   theme(axis.text.x = element_text(angle = 45, hjust = 1))
 
 
-# =============================================================================
 # SECTION 7: GENERAL MODELS -- LPM, ORDERED LOGIT, ORDERED PROBIT (req. a, d)
-# =============================================================================
+
 form_general <- freedom ~ kinship + log_gdppc_c + log_pop + urban_pct +
   unemp + trade + internet + kinship:log_gdppc_c
 
-# LPM: treat ordered outcome as numeric 1/2/3 (benchmark only; not preferred)
-df_model$freedom_num <- as.numeric(df_model$freedom)   # NotFree=1 ... Free=3
+# LPM: ordered outcome as numeric 1/2/3 (only for benchmark)
+df_model$freedom_num <- as.numeric(df_model$freedom)
 LPM_general <- lm(update(form_general, freedom_num ~ .), data = df_model)
 
 # Ordered logit and ordered probit
-ologit_general  <- polr(form_general, data = df_model, method = "logistic", Hess = TRUE)
-oprobit_general <- polr(form_general, data = df_model, method = "probit",   Hess = TRUE)
+ologit_general <- polr(form_general, data = df_model, method = "logistic", Hess = TRUE)
+oprobit_general <- polr(form_general, data = df_model, method = "probit", Hess = TRUE)
 
-cat("\n=== GENERAL ordered logit ===\n");  print(summary(ologit_general))
-cat("\n=== GENERAL ordered probit ===\n"); print(summary(oprobit_general))
+cat("\nGENERAL ordered logit \n");  print(summary(ologit_general))
+cat("\nGENERAL ordered probit \n"); print(summary(oprobit_general))
 
-# Helper: p-values for polr slope coefficients (polr gives no p-values directly)
+# Helper function for p-values for polr slope coefficients
 polr_pvals <- function(model) {
   ct <- coef(summary(model))
   slopes <- ct[!rownames(ct) %in% names(model$zeta), , drop = FALSE]  # drop thresholds
   pv <- pnorm(abs(slopes[, "t value"]), lower.tail = FALSE) * 2
   setNames(pv, rownames(slopes))
 }
-cat("\n--- General ordered logit: p-values ---\n"); print(round(polr_pvals(ologit_general), 4))
+cat("\nGeneral ordered logit: p-values \n"); print(round(polr_pvals(ologit_general), 4))
 
-# Choose logit vs probit by information criteria (lower = better)
+# Information criteria
 cat("\nAIC  logit/probit:", AIC(ologit_general),  AIC(oprobit_general), "\n")
 cat("BIC  logit/probit:", BIC(ologit_general),  BIC(oprobit_general), "\n")
-# We carry the ordered LOGIT forward (brant + odds interpretation); the probit
-# is reported alongside for comparison.
 
 
-# =============================================================================
-# SECTION 8: GENERAL-TO-SPECIFIC SELECTION (req. b)
-# =============================================================================
-# Rule (lab method): at each step drop the single most-insignificant control,
-# then verify with anova() against the ORIGINAL GENERAL MODEL that ALL dropped
-# variables are jointly = 0 (p >= 0.05 -> safe to drop). Protected from removal:
-# kinship, log_gdppc_c, and the interaction (hierarchy principle).
+# SECTION 8: GENERAL-TO-SPECIFIC SELECTION 
 
 protected <- c("kinship", "log_gdppc_c", "kinship:log_gdppc_c")
 
@@ -241,11 +207,9 @@ gts_polr <- function(general_model, data, protected, method = "probit",
     mod <- polr(reformulate(current_terms, response = "freedom"),
                 data = data, method = method, Hess = TRUE)
     pv  <- polr_pvals(mod)
-    # candidate controls = current terms that are NOT protected and ARE signific…?
     cand <- setdiff(current_terms, protected)
-    # map term -> its p-value (interaction term name may differ in coef table)
     cand_p <- pv[intersect(names(pv), cand)]
-    cand_p <- cand_p[cand_p >= alpha]          # only insignificant ones
+    cand_p <- cand_p[cand_p >= alpha]         
     if (length(cand_p) == 0) {
       cat("\nGTS STOP: all remaining controls significant.\n")
       return(mod)

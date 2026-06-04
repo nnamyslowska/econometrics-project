@@ -1,11 +1,15 @@
-# =============================================================================
+ 
 # Kinship intensity and political freedom: an ordered logit / probit analysis
-# =============================================================================
+ 
 # Dependent variable: Freedom House status, recoded as an ordered factor
 #   Not Free < Partly Free < Free   (higher category = more free)
 # Key explanatory variable: kinship intensity index (Enke 2019)
 # Data: QoG Standard Dataset (Jan 2026) + kinship intensity index
-# =============================================================================
+ 
+
+# install.packages(c("MASS","brant","pscl","generalhoslem","erer","DescTools",
+#                    "stargazer","ggplot2","dplyr","lmtest","car","sandwich",
+#                    "nortest"))
 
 library(MASS)          # polr(): ordered logit / probit
 library(brant)         # brant(): proportional odds test
@@ -29,9 +33,8 @@ options(scipen = 100)
 setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
 
 
-# =============================================================================
+ 
 # SECTION 1: load and merge
-# =============================================================================
 
 qog <- read.csv("data/qog_std_cs_jan26.csv", stringsAsFactors = FALSE)
 kinship <- read.csv("data/kinship_df.csv", stringsAsFactors = FALSE)
@@ -66,9 +69,8 @@ print(merge_audit[merge_audit$source_status == "QoG only", c("iso", "qog_country
 write.csv(merge_audit, "merge_audit_qog_kinship.csv", row.names = FALSE)
 
 
-# =============================================================================
+ 
 # SECTION 2: build the dependent variable
-# =============================================================================
 
 cat("\nRaw fh_status values:\n")
 print(table(df$fh_status, useNA = "ifany"))
@@ -82,9 +84,8 @@ cat("\nOrdered dependent variable (freedom):\n")
 print(table(df$freedom, useNA = "ifany"))
 
 
-# =============================================================================
+ 
 # SECTION 3: missing value screen and candidate selection
-# =============================================================================
 
 missing_all <- data.frame(
   variable    = names(df),
@@ -131,9 +132,9 @@ cat("\nComplete cases across all candidate variables:",
     sum(complete.cases(df[, key_vars])), "of", nrow(df), "\n")
 
 
-# =============================================================================
+ 
 # SECTION 4: variable construction and complete-case sample
-# =============================================================================
+ 
 # GDP per capita, population and oil rents are right skewed, so we log them.
 # Oil rents contain zeros, so we use log(1 + oil rents) to keep those countries.
 
@@ -222,9 +223,8 @@ print(table(df_model$freedom))
 write.csv(df_model, "data/df_model_clean_complete_cases.csv", row.names = FALSE)
 
 
-# =============================================================================
+ 
 # SECTION 5: descriptive statistics and exploratory graphs
-# =============================================================================
 
 Desc(df_model$freedom, main = "Freedom status (ordered DV)")
 Desc(df_model$kinship, main = "Kinship intensity score")
@@ -234,7 +234,7 @@ continuous_vars <- c("kinship", "log_gdppc", "log_pop", "urban_pct",
 cat("\nSummary statistics, continuous variables:\n")
 print(summary(df_model[, continuous_vars]))
 
-# Graph 1: distribution of the dependent variable
+# Graph 2: distribution of the dependent variable
 freedom_counts <- as.data.frame(table(df_model$freedom))
 names(freedom_counts) <- c("freedom", "n")
 
@@ -253,7 +253,7 @@ print(g_freedom)
 ggsave("fig_freedom_distribution.png", g_freedom,
        width = 7, height = 4.5, dpi = 300)
 
-# Graph 2: kinship by freedom status
+# Graph 3: kinship by freedom status
 g_kin_box <- ggplot(df_model, aes(x = freedom, y = kinship)) +
   geom_boxplot(fill = "grey70", colour = "grey30") +
   labs(title = "Kinship intensity by freedom status",
@@ -262,7 +262,7 @@ g_kin_box <- ggplot(df_model, aes(x = freedom, y = kinship)) +
 print(g_kin_box)
 ggsave("fig_kinship_by_freedom.png", g_kin_box, width = 7, height = 4.5, dpi = 300)
 
-# Graph 3: GDP per capita by freedom status
+# Graph 4: GDP per capita by freedom status
 g_gdp_box <- ggplot(df_model, aes(x = freedom, y = log_gdppc)) +
   geom_boxplot(fill = "grey70", colour = "grey30") +
   labs(title = "GDP per capita by freedom status",
@@ -271,7 +271,7 @@ g_gdp_box <- ggplot(df_model, aes(x = freedom, y = log_gdppc)) +
 print(g_gdp_box)
 ggsave("fig_gdp_by_freedom.png", g_gdp_box, width = 7, height = 4.5, dpi = 300)
 
-# Graph 4: oil-rent dependence by freedom status
+# Graph 5: oil-rent dependence by freedom status
 g_oil_box <- ggplot(df_model, aes(x = freedom, y = log_oilrent)) +
   geom_boxplot(fill = "grey70", colour = "grey30") +
   labs(title = "Oil-rent dependence by freedom status",
@@ -281,7 +281,7 @@ g_oil_box <- ggplot(df_model, aes(x = freedom, y = log_oilrent)) +
 print(g_oil_box)
 ggsave("fig_oilrent_by_freedom.png", g_oil_box, width = 7, height = 4.5, dpi = 300)
 
-# Graph 5: correlation heatmap of continuous regressors
+# Graph 6: correlation heatmap of continuous regressors
 cor_matrix <- round(cor(df_model[, continuous_vars], use = "complete.obs"), 2)
 cor_df <- as.data.frame(as.table(cor_matrix))
 names(cor_df) <- c("Variable_1", "Variable_2", "Correlation")
@@ -296,9 +296,8 @@ print(g_corr)
 ggsave("fig_correlation_matrix.png", g_corr, width = 7, height = 6, dpi = 300)
 
 
-# =============================================================================
 # SECTION 6: general models (LPM, ordered logit, ordered probit)
-# =============================================================================
+ 
 stopifnot(is.ordered(df_model$freedom))
 
 form_general <- freedom ~ kinship + log_gdppc_c + log_pop + urban_pct +
@@ -341,9 +340,8 @@ cat("\nLR test, general ordered logit vs null:\n");  print(lrtest(ologit_general
 cat("\nLR test, general ordered probit vs null:\n"); print(lrtest(oprobit_general, oprobit_null))
 
 
-# =============================================================================
 # SECTION 7: general-to-specific selection
-# =============================================================================
+ 
 cat("\nStep 0, general ordered logit:\n")
 print(polr_table(ologit_general))
 
@@ -359,7 +357,7 @@ ologit_gts_2 <- polr(freedom ~ kinship + log_gdppc_c + log_pop +
                      data = df_model, method = "logistic", Hess = TRUE)
 print(anova(ologit_general, ologit_gts_2))
 
-# internet
+# drop internet
 ologit_gts_3 <- polr(freedom ~ kinship + log_gdppc_c + log_pop +
                        trade + log_oilrent + kinship:log_gdppc_c,
                      data = df_model, method = "logistic", Hess = TRUE)
@@ -405,27 +403,26 @@ cat("\nInteraction-aware GVIF, final LPM:\n")
 print(vif(LPM_final, type = "predictor"))
 
 
-# =============================================================================
+ 
 # SECTION 8: diagnostics for the final model
-# =============================================================================
 
-# 8a. Brant test: proportional odds assumption (ordered logit).
+# Brant test: proportional odds assumption (ordered logit).
 cat("\nBrant test (proportional odds):\n")
 print(brant(ologit_final))
 
-# 8b. Goodness of fit: ordinal Hosmer-Lemeshow and Lipsitz.
+# Goodness of fit: ordinal Hosmer-Lemeshow and Lipsitz.
 cat("\nOrdinal Hosmer-Lemeshow test:\n")
 print(logitgof(df_model$freedom, fitted(ologit_final), g = 10, ord = TRUE))
 
 cat("\nLipsitz test:\n")
 print(lipsitz.test(ologit_final))
 
-# The Pulkstenis-Robinson test cannot be applied here: it requires at least one categorical predictor
+# The Pulkstenis-Robinson test cannot be applied here because it requires at least one categorical predictor
 cat("\nPulkstenis-Robinson test:\n")
 print(tryCatch(pulkrob.chisq(ologit_final, character(0)),
                error = function(e) "Not applicable: the model has no categorical predictor."))
 
-# 8c. Pseudo R2
+# Pseudo R2
 
 cat("\nMcFadden pseudo R2 (logit / probit):\n")
 cat("Logit: ", round(pR2(ologit_final)["McFadden"], 4), "\n")
@@ -457,7 +454,7 @@ count_r2 <- function(model) {
 cat("\nCount R2 and adjusted count R2 (logit):\n"); print(count_r2(ologit_final))
 cat("Count R2 and adjusted count R2 (probit):\n"); print(count_r2(oprobit_final))
 
-# 8d. Linktest for specification 
+# Linktest for specification 
 linktest_ordered <- function(model) {
   beta <- coef(model)
   X <- model.matrix(model)[, names(beta), drop = FALSE]
@@ -471,7 +468,7 @@ print(linktest_ordered(ologit_final))
 cat("\nLinktest, final ordered probit:\n")
 print(linktest_ordered(oprobit_final))
 
-# 8e. Marginal effects per category for probit
+# Marginal effects per category for probit
 ame_probit <- avg_slopes(oprobit_final, type = "probs")
 print(ame_probit)
 
@@ -512,9 +509,9 @@ ame_table <- ame_df |>
 
 print(ame_table, row.names = FALSE)
 
-# =============================================================================
+ 
 # SECTION 9: predicted probabilities and hypothesis testing
-# =============================================================================
+ 
 # The Brant test rejects proportional odds for the ordered logit, mostly because
 # of oil rents, so predicted probabilities are based on the ordered probit and
 # the ordered logit is treated as a robustness model.
@@ -529,7 +526,7 @@ base_log_pop <- mean(df_model$log_pop)
 base_trade <- mean(df_model$trade)
 base_log_oilrent <- mean(df_model$log_oilrent)
 
-# H1 and H2: kinship and the kinship-by-GDP interaction.
+# H1 and H2: kinship and the kinship-by-GDP interaction
 gdp_levels <- data.frame(
   gdp_label = c("Low GDP", "Average GDP", "High GDP"),
   log_gdppc_c = c(quantile(df_model$log_gdppc_c, 0.25), 0,
